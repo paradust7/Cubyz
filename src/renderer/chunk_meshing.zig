@@ -649,7 +649,7 @@ pub const ChunkMesh = struct { // MARK: ChunkMesh
 	finishedMeshing: bool = false, // Must be synced with node.finishedMeshing in mesh_storage.zig
 	finishedLighting: bool = false,
 	litNeighbors: Atomic(u32) = .init(0),
-	mutex: std.Thread.Mutex = .{},
+	mutex: std.Io.Mutex = .init,
 	chunkAllocation: graphics.SubAllocation = .{.start = 0, .len = 0},
 	min: Vec3f = undefined,
 	max: Vec3f = undefined,
@@ -737,9 +737,9 @@ pub const ChunkMesh = struct { // MARK: ChunkMesh
 			defer main.globalAllocator.destroy(self);
 			const mesh = mesh_storage.getMesh(self.pos) orelse return;
 			if (mesh.needsLightRefresh.swap(false, .acq_rel)) {
-				mesh.mutex.lock();
+				mesh.mutex.lockUncancelable(main.io);
 				mesh.finishData();
-				mesh.mutex.unlock();
+				mesh.mutex.unlock(main.io);
 				mesh_storage.addToUpdateList(mesh);
 			}
 		}
@@ -760,14 +760,14 @@ pub const ChunkMesh = struct { // MARK: ChunkMesh
 	}
 
 	fn initLight(self: *ChunkMesh, lightRefreshList: *main.List(chunk.ChunkPosition)) void {
-		self.mutex.lock();
+		self.mutex.lockUncancelable(main.io);
 		var lightEmittingBlocks = main.List(chunk.BlockPos).init(main.stackAllocator);
 		defer lightEmittingBlocks.deinit();
 		for (0..chunk.chunkVolume) |index| {
 			const block = self.chunk.data.getValue(index);
 			if (block.light() != 0) lightEmittingBlocks.append(.fromIndex(@intCast(index)));
 		}
-		self.mutex.unlock();
+		self.mutex.unlock(main.io);
 		self.lightingData[0].propagateLights(lightEmittingBlocks.items, true, lightRefreshList);
 		sunLight: {
 			var allSun: bool = self.chunk.data.palette().len == 1 and self.chunk.data.palette()[0].load(.unordered).typ == 0;
@@ -804,9 +804,9 @@ pub const ChunkMesh = struct { // MARK: ChunkMesh
 		defer lightRefreshList.deinit();
 		self.initLight(&lightRefreshList);
 
-		self.mutex.lock();
+		self.mutex.lockUncancelable(main.io);
 		self.finishedLighting = true;
-		self.mutex.unlock();
+		self.mutex.unlock(main.io);
 
 		// Only generate a mesh if the surrounding 27 chunks finished the light generation steps.
 		var dx: i32 = -1;
@@ -826,9 +826,9 @@ pub const ChunkMesh = struct { // MARK: ChunkMesh
 					if (neighborMesh.litNeighbors.fetchOr(@as(u27, 1) << shiftOther, .monotonic) ^ @as(u27, 1) << shiftOther == ~@as(u27, 0)) { // Trigger mesh creation for neighbor
 						neighborMesh.generateMesh(&lightRefreshList);
 					}
-					neighborMesh.mutex.lock();
+					neighborMesh.mutex.lockUncancelable(main.io);
 					const neighborFinishedLighting = neighborMesh.finishedLighting;
-					neighborMesh.mutex.unlock();
+					neighborMesh.mutex.unlock(main.io);
 					if (neighborFinishedLighting and self.litNeighbors.fetchOr(@as(u27, 1) << shiftSelf, .monotonic) ^ @as(u27, 1) << shiftSelf == ~@as(u27, 0)) {
 						self.generateMesh(&lightRefreshList);
 					}
@@ -861,7 +861,7 @@ pub const ChunkMesh = struct { // MARK: ChunkMesh
 		@memset(std.mem.asBytes(&canSeeAllNeighbors), 0);
 		var hasFaces: [chunk.chunkSize][chunk.chunkSize]u32 = undefined;
 		@memset(std.mem.asBytes(&hasFaces), 0);
-		self.mutex.lock();
+		self.mutex.lockUncancelable(main.io);
 
 		var transparentCore: main.ListUnmanaged(FaceData) = .{};
 		defer transparentCore.deinit(main.stackAllocator);
@@ -1140,7 +1140,7 @@ pub const ChunkMesh = struct { // MARK: ChunkMesh
 			}
 		}
 
-		self.mutex.unlock();
+		self.mutex.unlock(main.io);
 
 		self.opaqueMesh.replaceRange(.core, opaqueCore.items);
 		self.opaqueMesh.replaceRange(.optional, opaqueOptional.items);
@@ -1162,9 +1162,9 @@ pub const ChunkMesh = struct { // MARK: ChunkMesh
 
 	fn updateBlockLightAndMesh(self: *ChunkMesh, blockUpdatePos: Vec3i, lightRefreshList: *main.List(chunk.ChunkPosition), regenerateMeshList: *main.List(*ChunkMesh)) void {
 		const blockPos = chunk.BlockPos.fromWorldCoords(blockUpdatePos[0], blockUpdatePos[1], blockUpdatePos[2]);
-		self.mutex.lock();
+		self.mutex.lockUncancelable(main.io);
 		var newBlock = self.chunk.data.getValue(blockPos.toIndex());
-		self.mutex.unlock();
+		self.mutex.unlock(main.io);
 
 		var neighborBlocks: [6]Block = @splat(.{.typ = 0, .data = 0});
 
@@ -1174,26 +1174,26 @@ pub const ChunkMesh = struct { // MARK: ChunkMesh
 			if (chunkLocation == .inNeighborChunk) {
 				const neighborChunkMesh = mesh_storage.getNeighbor(self.pos, self.pos.voxelSize, neighbor) orelse continue;
 
-				neighborChunkMesh.mutex.lock();
+				neighborChunkMesh.mutex.lockUncancelable(main.io);
 				var neighborBlock = neighborChunkMesh.chunk.data.getValue(neighborPos.toIndex());
 
 				if (neighborBlock.mode().dependsOnNeighbors and neighborBlock.mode().updateData(&neighborBlock, neighbor.reverse(), newBlock)) {
 					neighborChunkMesh.chunk.data.setValue(neighborPos.toIndex(), neighborBlock);
-					neighborChunkMesh.mutex.unlock();
+					neighborChunkMesh.mutex.unlock(main.io);
 					neighborChunkMesh.updateBlockLight(neighborPos, neighborBlock, lightRefreshList);
 					appendIfNotContained(regenerateMeshList, neighborChunkMesh);
-					neighborChunkMesh.mutex.lock();
+					neighborChunkMesh.mutex.lockUncancelable(main.io);
 				}
-				neighborChunkMesh.mutex.unlock();
+				neighborChunkMesh.mutex.unlock(main.io);
 				neighborBlocks[neighbor.toInt()] = neighborBlock;
 			} else {
-				self.mutex.lock();
+				self.mutex.lockUncancelable(main.io);
 				var neighborBlock = self.chunk.data.getValue(neighborPos.toIndex());
 				if (neighborBlock.mode().dependsOnNeighbors and neighborBlock.mode().updateData(&neighborBlock, neighbor.reverse(), newBlock)) {
 					self.chunk.data.setValue(neighborPos.toIndex(), neighborBlock);
 					self.updateBlockLight(neighborPos, neighborBlock, lightRefreshList);
 				}
-				self.mutex.unlock();
+				self.mutex.unlock(main.io);
 				neighborBlocks[neighbor.toInt()] = neighborBlock;
 			}
 		}
@@ -1205,7 +1205,7 @@ pub const ChunkMesh = struct { // MARK: ChunkMesh
 
 		self.updateBlockLight(blockPos, newBlock, lightRefreshList);
 
-		self.mutex.lock();
+		self.mutex.lockUncancelable(main.io);
 		// Update neighbor chunks:
 		if (blockPos.x == 0) {
 			self.lastNeighborsHigherLod[chunk.Neighbor.dirNegX.toInt()] = null;
@@ -1228,7 +1228,7 @@ pub const ChunkMesh = struct { // MARK: ChunkMesh
 			self.lastNeighborsHigherLod[chunk.Neighbor.dirUp.toInt()] = null;
 			self.lastNeighborsSameLod[chunk.Neighbor.dirUp.toInt()] = null;
 		}
-		self.mutex.unlock();
+		self.mutex.unlock(main.io);
 
 		appendIfNotContained(regenerateMeshList, self);
 	}
@@ -1367,8 +1367,8 @@ pub const ChunkMesh = struct { // MARK: ChunkMesh
 	}
 
 	pub fn uploadData(self: *ChunkMesh) void {
-		self.mutex.lock();
-		defer self.mutex.unlock();
+		self.mutex.lockUncancelable(main.io);
+		defer self.mutex.unlock(main.io);
 		{
 			self.opaqueMesh.lock.lockRead();
 			defer self.opaqueMesh.lock.unlockRead();
@@ -1388,13 +1388,13 @@ pub const ChunkMesh = struct { // MARK: ChunkMesh
 		self.uploadChunkPosition();
 	}
 
-	fn deadlockFreeDoubleLock(m1: *std.Thread.Mutex, m2: *std.Thread.Mutex) void {
+	fn deadlockFreeDoubleLock(m1: *std.Io.Mutex, m2: *std.Io.Mutex) void {
 		if (@intFromPtr(m1) < @intFromPtr(m2)) {
-			m1.lock();
-			m2.lock();
+			m1.lockUncancelable(main.io);
+			m2.lockUncancelable(main.io);
 		} else {
-			m2.lock();
-			m1.lock();
+			m2.lockUncancelable(main.io);
+			m1.lockUncancelable(main.io);
 		}
 	}
 
@@ -1404,8 +1404,8 @@ pub const ChunkMesh = struct { // MARK: ChunkMesh
 			if (nullNeighborMesh) |neighborMesh| sameLodBlock: {
 				std.debug.assert(neighborMesh != self);
 				deadlockFreeDoubleLock(&self.mutex, &neighborMesh.mutex);
-				defer self.mutex.unlock();
-				defer neighborMesh.mutex.unlock();
+				defer self.mutex.unlock(main.io);
+				defer neighborMesh.mutex.unlock(main.io);
 				if (self.lastNeighborsSameLod[neighbor.toInt()] == neighborMesh) break :sameLodBlock;
 				self.lastNeighborsSameLod[neighbor.toInt()] = neighborMesh;
 				neighborMesh.lastNeighborsSameLod[neighbor.reverse().toInt()] = self;
@@ -1476,8 +1476,8 @@ pub const ChunkMesh = struct { // MARK: ChunkMesh
 				_ = neighborMesh.needsLightRefresh.store(true, .release);
 				lightRefreshList.append(neighborMesh.pos);
 			} else {
-				self.mutex.lock();
-				defer self.mutex.unlock();
+				self.mutex.lockUncancelable(main.io);
+				defer self.mutex.unlock(main.io);
 				if (self.lastNeighborsSameLod[neighbor.toInt()] != null) {
 					self.opaqueMesh.replaceRange(.neighbor(neighbor), &.{});
 					self.transparentMesh.replaceRange(.neighbor(neighbor), &.{});
@@ -1487,8 +1487,8 @@ pub const ChunkMesh = struct { // MARK: ChunkMesh
 			// lod border:
 			if (self.pos.voxelSize == @as(u31, 1) << settings.highestLod) continue;
 			const neighborMesh = mesh_storage.getNeighbor(self.pos, 2*self.pos.voxelSize, neighbor) orelse {
-				self.mutex.lock();
-				defer self.mutex.unlock();
+				self.mutex.lockUncancelable(main.io);
+				defer self.mutex.unlock(main.io);
 				if (self.lastNeighborsHigherLod[neighbor.toInt()] != null) {
 					self.opaqueMesh.replaceRange(.neighborLod(neighbor), &.{});
 					self.transparentMesh.replaceRange(.neighborLod(neighbor), &.{});
@@ -1497,8 +1497,8 @@ pub const ChunkMesh = struct { // MARK: ChunkMesh
 				continue;
 			};
 			deadlockFreeDoubleLock(&self.mutex, &neighborMesh.mutex);
-			defer self.mutex.unlock();
-			defer neighborMesh.mutex.unlock();
+			defer self.mutex.unlock(main.io);
+			defer neighborMesh.mutex.unlock(main.io);
 			if (self.lastNeighborsHigherLod[neighbor.toInt()] == neighborMesh) continue;
 			self.lastNeighborsHigherLod[neighbor.toInt()] = neighborMesh;
 
@@ -1557,8 +1557,8 @@ pub const ChunkMesh = struct { // MARK: ChunkMesh
 			self.opaqueMesh.replaceRange(.neighborLod(neighbor), opaqueSelf.items);
 			self.transparentMesh.replaceRange(.neighborLod(neighbor), transparentSelf.items);
 		}
-		self.mutex.lock();
-		defer self.mutex.unlock();
+		self.mutex.lockUncancelable(main.io);
+		defer self.mutex.unlock(main.io);
 		_ = self.needsLightRefresh.swap(false, .acq_rel);
 		self.finishData();
 		mesh_storage.finishMesh(self.pos);

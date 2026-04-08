@@ -42,7 +42,7 @@ var lastPx: i32 = 0;
 var lastPy: i32 = 0;
 var lastPz: i32 = 0;
 var lastRD: u16 = 0;
-var mutex: std.Thread.Mutex = .{};
+var mutex: std.Io.Mutex = .init;
 
 pub const BlockUpdate = struct {
 	pos: Vec3i,
@@ -560,12 +560,12 @@ pub noinline fn updateAndGetRenderChunks(conn: *network.Connection, frustum: *co
 	const olderPy = lastPy;
 	const olderPz = lastPz;
 	const olderRD = lastRD;
-	mutex.lock();
+	mutex.lockUncancelable(main.io);
 	lastPx = @intFromFloat(playerPos[0]);
 	lastPy = @intFromFloat(playerPos[1]);
 	lastPz = @intFromFloat(playerPos[2]);
 	lastRD = renderDistance;
-	mutex.unlock();
+	mutex.unlock(main.io);
 	freeOldMeshes(olderPx, olderPy, olderPz, olderRD);
 
 	createNewMeshes(olderPx, olderPy, olderPz, olderRD, &meshRequests, &mapRequests);
@@ -710,16 +710,16 @@ pub noinline fn updateAndGetRenderChunks(conn: *network.Connection, frustum: *co
 }
 
 pub fn updateMeshes(targetTime: std.Io.Timestamp) void { // MARK: updateMeshes()
-	mutex.lock();
-	defer mutex.unlock();
+	mutex.lockUncancelable(main.io);
+	defer mutex.unlock(main.io);
 	while (priorityMeshUpdateList.popFront()) |pos| {
 		const mesh = getMesh(pos) orelse continue;
 		if (!mesh.needsMeshUpdate) {
 			continue;
 		}
 		mesh.needsMeshUpdate = false;
-		mutex.unlock();
-		defer mutex.lock();
+		mutex.unlock(main.io);
+		defer mutex.lockUncancelable(main.io);
 		mesh.uploadData();
 		if (targetTime.durationTo(main.timestamp()).nanoseconds >= 0) break; // Update at least one mesh.
 	}
@@ -744,8 +744,8 @@ pub fn updateMeshes(targetTime: std.Io.Timestamp) void { // MARK: updateMeshes()
 				const pos = updatableList.items[i];
 				if (!isInRenderDistance(pos)) {
 					_ = updatableList.swapRemove(i);
-					mutex.unlock();
-					defer mutex.lock();
+					mutex.unlock(main.io);
+					defer mutex.lockUncancelable(main.io);
 					continue;
 				}
 				const priority = pos.getPriority(playerPos);
@@ -758,8 +758,8 @@ pub fn updateMeshes(targetTime: std.Io.Timestamp) void { // MARK: updateMeshes()
 			if (updatableList.items.len == 0) break;
 		}
 		const pos = updatableList.swapRemove(closestIndex);
-		mutex.unlock();
-		defer mutex.lock();
+		mutex.unlock(main.io);
+		defer mutex.lockUncancelable(main.io);
 		if (isInRenderDistance(pos)) {
 			const node = getNodePointer(pos);
 			if (node.finishedMeshing) continue;
@@ -776,8 +776,8 @@ pub fn updateMeshes(targetTime: std.Io.Timestamp) void { // MARK: updateMeshes()
 // MARK: adders
 
 pub fn addToUpdateList(mesh: *chunk_meshing.ChunkMesh) void {
-	mutex.lock();
-	defer mutex.unlock();
+	mutex.lockUncancelable(main.io);
+	defer mutex.unlock(main.io);
 	if (mesh.finishedMeshing) {
 		priorityMeshUpdateList.pushBack(mesh.pos);
 		mesh.needsMeshUpdate = true;
@@ -785,8 +785,8 @@ pub fn addToUpdateList(mesh: *chunk_meshing.ChunkMesh) void {
 }
 
 pub fn addMeshToStorage(mesh: *chunk_meshing.ChunkMesh) error{ AlreadyStored, NoLongerNeeded }!void {
-	mutex.lock();
-	defer mutex.unlock();
+	mutex.lockUncancelable(main.io);
+	defer mutex.unlock(main.io);
 	if (!isInRenderDistance(mesh.pos)) {
 		return error.NoLongerNeeded;
 	}
@@ -799,8 +799,8 @@ pub fn addMeshToStorage(mesh: *chunk_meshing.ChunkMesh) error{ AlreadyStored, No
 }
 
 pub fn finishMesh(pos: chunk.ChunkPosition) void {
-	mutex.lock();
-	defer mutex.unlock();
+	mutex.lockUncancelable(main.io);
+	defer mutex.unlock(main.io);
 	updatableList.append(pos);
 }
 
@@ -888,8 +888,8 @@ fn addBreakingAnimationFace(pos: Vec3i, quadIndex: main.models.QuadIndex, textur
 	const worldPos = pos +% if (neighbor) |n| n.relPos() else Vec3i{0, 0, 0};
 	const relPos = worldPos & @as(Vec3i, @splat(main.chunk.chunkMask));
 	const mesh = getMesh(.{.wx = worldPos[0], .wy = worldPos[1], .wz = worldPos[2], .voxelSize = 1}) orelse return;
-	mesh.mutex.lock();
-	defer mesh.mutex.unlock();
+	mesh.mutex.lockUncancelable(main.io);
+	defer mesh.mutex.unlock(main.io);
 	const lightIndex = blk: {
 		const meshData = if (isTransparent) &mesh.transparentMesh else &mesh.opaqueMesh;
 		meshData.lock.lockRead();

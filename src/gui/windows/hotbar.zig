@@ -58,7 +58,7 @@ pub fn onClose() void {
 }
 
 pub fn update() void {
-	Player.mutex.lock();
-	defer Player.mutex.unlock();
+	Player.mutex.lockUncancelable(main.io);
+	defer Player.mutex.unlock(main.io);
 	itemSlots[Player.selectedSlot].hovered = true;
 }

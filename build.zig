@@ -12,8 +12,8 @@ fn linkLibraries(b: *std.Build, exe: *std.Build.Step.Compile, useLocalDeps: bool
 	const t = target.result;
 	const optimize = exe.root_module.optimize.?;
 
-	exe.linkLibC();
-	exe.linkLibCpp();
+	exe.root_module.link_libc = true;
+	exe.root_module.link_libcpp = true;
 
 	const depsLib = b.fmt("cubyz_deps_{s}-{s}-{s}", .{@tagName(t.cpu.arch), @tagName(t.os.tag), switch (t.os.tag) {
 		.linux => "musl",
@@ -40,16 +40,17 @@ fn linkLibraries(b: *std.Build, exe: *std.Build.Step.Compile, useLocalDeps: bool
 		return;
 	};
 
-	exe.addIncludePath(headersDeps.path("include"));
-	exe.addObjectFile(libsDeps.path("lib").path(b, artifactName));
+	const r = exe.root_module;
+	r.addIncludePath(headersDeps.path("include"));
+	r.addObjectFile(libsDeps.path("lib").path(b, artifactName));
 	const subPath = libsDeps.path("lib").path(b, depsLib);
-	exe.addObjectFile(subPath.path(b, libName(b, "glslang", t)));
-	exe.addObjectFile(subPath.path(b, libName(b, "MachineIndependent", t)));
-	exe.addObjectFile(subPath.path(b, libName(b, "GenericCodeGen", t)));
-	exe.addObjectFile(subPath.path(b, libName(b, "glslang-default-resource-limits", t)));
-	exe.addObjectFile(subPath.path(b, libName(b, "SPIRV", t)));
-	exe.addObjectFile(subPath.path(b, libName(b, "SPIRV-Tools", t)));
-	exe.addObjectFile(subPath.path(b, libName(b, "SPIRV-Tools-opt", t)));
+	r.addObjectFile(subPath.path(b, libName(b, "glslang", t)));
+	r.addObjectFile(subPath.path(b, libName(b, "MachineIndependent", t)));
+	r.addObjectFile(subPath.path(b, libName(b, "GenericCodeGen", t)));
+	r.addObjectFile(subPath.path(b, libName(b, "glslang-default-resource-limits", t)));
+	r.addObjectFile(subPath.path(b, libName(b, "SPIRV", t)));
+	r.addObjectFile(subPath.path(b, libName(b, "SPIRV-Tools", t)));
+	r.addObjectFile(subPath.path(b, libName(b, "SPIRV-Tools-opt", t)));
 
 	if (t.os.tag == .macos) {
 		const moltenVkLibInstall = b.addInstallFile(subPath.path(b, "libMoltenVK.dylib"), "bin/Cubyz.app/Contents/Frameworks/libMoltenVK.dylib");
@@ -64,40 +65,42 @@ fn linkLibraries(b: *std.Build, exe: *std.Build.Step.Compile, useLocalDeps: bool
 	}
 
 	if (t.os.tag == .windows) {
-		exe.linkSystemLibrary("bcrypt");
-		exe.linkSystemLibrary("crypt32");
-		exe.linkSystemLibrary("gdi32");
-		exe.linkSystemLibrary("opengl32");
-		exe.linkSystemLibrary("ws2_32");
+		r.linkSystemLibrary("bcrypt", .{});
+		r.linkSystemLibrary("crypt32", .{});
+		r.linkSystemLibrary("gdi32", .{});
+		r.linkSystemLibrary("opengl32", .{});
+		r.linkSystemLibrary("ws2_32", .{});
 	} else if (t.os.tag == .macos) {
-		exe.linkFramework("Cocoa");
-		exe.linkFramework("CoreFoundation");
-		exe.linkFramework("IOKit");
-		exe.linkFramework("QuartzCore");
+		r.linkFramework("Cocoa", .{});
+		r.linkFramework("CoreFoundation", .{});
+		r.linkFramework("IOKit", .{});
+		r.linkFramework("QuartzCore", .{});
 	} else if (t.os.tag != .linux) {
 		std.log.err("Unsupported target: {}\n", .{t.os.tag});
 	}
 }
 
 pub fn makeModFeature(step: *std.Build.Step, name: []const u8) !void {
-	var featureList: std.ArrayListUnmanaged(u8) = .{};
+	const b = step.owner;
+	const io = b.graph.io;
+	var featureList: std.ArrayListUnmanaged(u8) = .empty;
 	defer featureList.deinit(step.owner.allocator);
 
-	var modDir = try std.fs.cwd().openDir("mods", .{.iterate = true});
-	defer modDir.close();
+	var modDir = try b.build_root.handle.openDir(io, "mods", .{.iterate = true});
+	defer modDir.close(io);
 
 	var iterator = modDir.iterate();
-	while (try iterator.next()) |modEntry| {
+	while (try iterator.next(io)) |modEntry| {
 		if (modEntry.kind != .directory) continue;
 
-		var mod = try modDir.openDir(modEntry.name, .{});
-		defer mod.close();
+		var mod = try modDir.openDir(io, modEntry.name, .{});
+		defer mod.close(io);
 
-		var featureDir = mod.openDir(name, .{.iterate = true}) catch continue;
-		defer featureDir.close();
+		var featureDir = mod.openDir(io, name, .{.iterate = true}) catch continue;
+		defer featureDir.close(io);
 
 		var featureIterator = featureDir.iterate();
-		while (try featureIterator.next()) |featureEntry| {
+		while (try featureIterator.next(io)) |featureEntry| {
 			if (featureEntry.kind != .file) continue;
 			if (!std.mem.endsWith(u8, featureEntry.name, ".zig")) continue;
 
@@ -117,7 +120,7 @@ pub fn makeModFeature(step: *std.Build.Step, name: []const u8) !void {
 	}
 
 	const file_path = step.owner.fmt("mods/{s}.zig", .{name});
-	try std.fs.cwd().writeFile(.{.data = featureList.items, .sub_path = file_path});
+	try b.build_root.handle.writeFile(io, .{.data = featureList.items, .sub_path = file_path});
 }
 
 pub fn addModFeatureModule(b: *std.Build, exe: *std.Build.Step.Compile, name: []const u8) !void {
@@ -147,8 +150,8 @@ pub fn makeModFeaturesStep(step: *std.Build.Step, _: std.Build.Step.MakeOptions)
 	try makeModFeature(step, "rotation");
 }
 
-fn createLaunchConfig() !void {
-	std.fs.cwd().access("launchConfig.zon", .{}) catch {
+fn createLaunchConfig(b: *std.Build) !void {
+	b.build_root.handle.access(b.graph.io, "launchConfig.zon", .{}) catch {
 		const launchConfig =
 			\\.{
 			\\    .cubyzDir = "",
@@ -157,7 +160,7 @@ fn createLaunchConfig() !void {
 			\\    // .preferredAuthenticationAlgorithm = .ed25519, // Uncomment and change this if you own a server in an outdated game version where the default algorithm got compromised.
 			\\}
 		;
-		try std.fs.cwd().writeFile(.{
+		try b.build_root.handle.writeFile(b.graph.io, .{
 			.data = launchConfig,
 			.sub_path = "launchConfig.zon",
 		});
@@ -165,7 +168,7 @@ fn createLaunchConfig() !void {
 }
 
 pub fn build(b: *std.Build) !void {
-	try createLaunchConfig();
+	try createLaunchConfig(b);
 
 	// Standard target options allows the person running `zig build` to choose
 	// what target to build for. Here we do not override the defaults, which

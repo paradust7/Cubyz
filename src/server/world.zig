@@ -110,7 +110,7 @@ pub fn tryCreateWorld(worldName: []const u8, worldSettings: Settings, preset: Zo
 
 		worldInfo.put("name", worldName);
 		worldInfo.put("version", worldDataVersion);
-		worldInfo.put("lastUsedTime", (try std.Io.Clock.Timestamp.now(main.io, .real)).raw.toMilliseconds());
+		worldInfo.put("lastUsedTime", std.Io.Clock.Timestamp.now(main.io, .real).raw.toMilliseconds());
 
 		try main.files.cubyzDir().writeZon(worldInfoPath, worldInfo);
 	}
@@ -137,12 +137,12 @@ pub const ChunkManager = struct { // MARK: ChunkManager
 		}
 	};
 	var simulationChunkHashMap: std.HashMap(chunk.ChunkPosition, *SimulationChunk, HashContext, 50) = undefined;
-	var mutex: std.Thread.Mutex = .{};
+	var mutex: std.Io.Mutex = .init;
 
 	fn getSimulationChunkAndIncreaseRefCount(pos: chunk.ChunkPosition) ?*SimulationChunk {
 		std.debug.assert(pos.voxelSize == 1);
-		mutex.lock();
-		defer mutex.unlock();
+		mutex.lockUncancelable(main.io);
+		defer mutex.unlock(main.io);
 		if (simulationChunkHashMap.get(pos)) |ch| {
 			ch.increaseRefCount();
 			return ch;
@@ -152,24 +152,24 @@ pub const ChunkManager = struct { // MARK: ChunkManager
 
 	pub fn getOrGenerateSimulationChunkAndIncreaseRefCount(pos: chunk.ChunkPosition) *SimulationChunk {
 		std.debug.assert(pos.voxelSize == 1);
-		mutex.lock();
+		mutex.lockUncancelable(main.io);
 		if (simulationChunkHashMap.get(pos)) |ch| {
 			ch.increaseRefCount();
-			mutex.unlock();
+			mutex.unlock(main.io);
 			return ch;
 		}
 		const ch = SimulationChunk.initAndIncreaseRefCount(pos);
 		ch.increaseRefCount();
 		ch.increaseRefCount();
 		simulationChunkHashMap.put(pos, ch) catch unreachable;
-		mutex.unlock();
+		mutex.unlock(main.io);
 		ChunkLoadTask.scheduleAndDecreaseRefCount(pos, .{.simulationChunk = ch});
 		return ch;
 	}
 
 	pub fn tryRemoveSimulationChunk(ch: *SimulationChunk) void {
-		mutex.lock();
-		defer mutex.unlock();
+		mutex.lockUncancelable(main.io);
+		defer mutex.unlock(main.io);
 		if (ch.refCount.load(.monotonic) == 1) { // Only we hold it.
 			std.debug.assert(simulationChunkHashMap.remove(ch.pos));
 			ch.decreaseRefCount();
@@ -365,8 +365,8 @@ pub const ChunkManager = struct { // MARK: ChunkManager
 		const region = storage.loadRegionFileAndIncreaseRefCount(pos.wx & ~regionMask, pos.wy & ~regionMask, pos.wz & ~regionMask, pos.voxelSize);
 		defer region.decreaseRefCount();
 		const ch = ServerChunk.initAndIncreaseRefCount(pos);
-		ch.mutex.lock();
-		defer ch.mutex.unlock();
+		ch.mutex.lockUncancelable(main.io);
+		defer ch.mutex.unlock(main.io);
 		if (region.getChunk(
 			main.stackAllocator,
 			@as(usize, @intCast(pos.wx -% region.pos.wx))/pos.voxelSize/chunk.chunkSize,
@@ -444,7 +444,7 @@ pub const ServerWorld = struct { // MARK: ServerWorld
 	name: []const u8 = &.{},
 	spawn: Vec3i = undefined,
 
-	mutex: std.Thread.Mutex = .{},
+	mutex: std.Io.Mutex = .init,
 
 	chunkUpdateQueue: main.utils.CircularBufferQueue(ChunkUpdateRequest),
 	regionUpdateQueue: main.utils.CircularBufferQueue(RegionUpdateRequest),
@@ -605,7 +605,7 @@ pub const ServerWorld = struct { // MARK: ServerWorld
 			var playerDir = try dir.openIterableDir("players");
 			defer playerDir.close();
 			var iterator = playerDir.iterate();
-			while (try iterator.next()) |file| {
+			while (try iterator.next(main.io)) |file| {
 				if (file.kind == .file and std.mem.endsWith(u8, file.name, ".zon")) {
 					fileNames.append(arena.dupe(u8, file.name));
 				}
@@ -613,7 +613,7 @@ pub const ServerWorld = struct { // MARK: ServerWorld
 
 			for (fileNames.items, 0..) |oldName, i| {
 				const newName = std.fmt.allocPrint(arena.allocator, "{}.zon", .{i}) catch unreachable;
-				try playerDir.dir.rename(oldName, newName);
+				try playerDir.dir.rename(oldName, playerDir.dir, newName, main.io);
 			}
 
 			worldData.put("version", 5);
@@ -645,7 +645,7 @@ pub const ServerWorld = struct { // MARK: ServerWorld
 		worldData.put("spawn", self.spawn);
 		worldData.put("biomeChecksum", self.biomeChecksum);
 		worldData.put("name", self.name);
-		worldData.put("lastUsedTime", (try std.Io.Clock.Timestamp.now(main.io, .real)).raw.toMilliseconds());
+		worldData.put("lastUsedTime", std.Io.Clock.Timestamp.now(main.io, .real).raw.toMilliseconds());
 		worldData.put("tickSpeed", self.tickSpeed.load(.monotonic));
 
 		try files.cubyzDir().writeZon(path, worldData);
@@ -655,7 +655,7 @@ pub const ServerWorld = struct { // MARK: ServerWorld
 		var playerDir = try dir.openIterableDir("players");
 		defer playerDir.close();
 		var iterator = playerDir.iterate();
-		while (try iterator.next()) |file| {
+		while (try iterator.next(main.io)) |file| {
 			if (file.kind == .file and std.mem.endsWith(u8, file.name, ".zon")) {
 				const zon = try playerDir.readToZon(main.stackAllocator, file.name);
 				defer zon.deinit(main.stackAllocator);
@@ -724,14 +724,14 @@ pub const ServerWorld = struct { // MARK: ServerWorld
 			defer self.clean();
 			const region = storage.loadRegionFileAndIncreaseRefCount(self.pos.wx, self.pos.wy, self.pos.wz, self.pos.voxelSize);
 			defer region.decreaseRefCount();
-			region.mutex.lock();
-			defer region.mutex.unlock();
+			region.mutex.lockUncancelable(main.io);
+			defer region.mutex.unlock(main.io);
 			for (0..storage.RegionFile.regionSize) |x| {
 				for (0..storage.RegionFile.regionSize) |y| {
 					for (0..storage.RegionFile.regionSize) |z| {
 						if (region.chunks[storage.RegionFile.getIndex(x, y, z)].len != 0) {
-							region.mutex.unlock();
-							defer region.mutex.lock();
+							region.mutex.unlock(main.io);
+							defer region.mutex.lockUncancelable(main.io);
 							const pos = ChunkPosition{
 								.wx = self.pos.wx + @as(i32, @intCast(x))*chunk.chunkSize,
 								.wy = self.pos.wy + @as(i32, @intCast(y))*chunk.chunkSize,
@@ -747,8 +747,8 @@ pub const ServerWorld = struct { // MARK: ServerWorld
 							nextPos.voxelSize *= 2;
 							const nextHigherLod = ChunkManager.getOrGenerateChunkAndIncreaseRefCount(nextPos);
 							defer nextHigherLod.decreaseRefCount();
-							ch.mutex.lock();
-							defer ch.mutex.unlock();
+							ch.mutex.lockUncancelable(main.io);
+							defer ch.mutex.unlock(main.io);
 							nextHigherLod.updateFromLowerResolution(ch);
 						}
 					}
@@ -792,19 +792,19 @@ pub const ServerWorld = struct { // MARK: ServerWorld
 			};
 			defer dirX.close();
 			var iterX = dirX.iterate();
-			while (try iterX.next()) |entryX| {
+			while (try iterX.next(main.io)) |entryX| {
 				if (entryX.kind != .directory) continue;
 				const wx = std.fmt.parseInt(i32, entryX.name, 0) catch continue;
 				var dirY = try dirX.openIterableDir(entryX.name);
 				defer dirY.close();
 				var iterY = dirY.iterate();
-				while (try iterY.next()) |entryY| {
+				while (try iterY.next(main.io)) |entryY| {
 					if (entryY.kind != .directory) continue;
 					const wy = std.fmt.parseInt(i32, entryY.name, 0) catch continue;
 					var dirZ = try dirY.openIterableDir(entryY.name);
 					defer dirZ.close();
 					var iterZ = dirZ.iterate();
-					while (try iterZ.next()) |entryZ| {
+					while (try iterZ.next(main.io)) |entryZ| {
 						if (entryZ.kind != .file) continue;
 						const nameZ = entryZ.name[0 .. std.mem.indexOfScalar(u8, entryZ.name, '.') orelse entryZ.name.len];
 						const wz = std.fmt.parseInt(i32, nameZ, 0) catch continue;
@@ -818,27 +818,27 @@ pub const ServerWorld = struct { // MARK: ServerWorld
 			RegenerateLODTask.schedule(pos, !hasSurfaceMaps);
 		}
 
-		self.mutex.lock();
-		defer self.mutex.unlock();
+		self.mutex.lockUncancelable(main.io);
+		defer self.mutex.unlock(main.io);
 		while (true) {
 			while (self.chunkUpdateQueue.popFront()) |updateRequest| {
-				self.mutex.unlock();
-				defer self.mutex.lock();
+				self.mutex.unlock(main.io);
+				defer self.mutex.lockUncancelable(main.io);
 				updateRequest.ch.save(self);
 				updateRequest.ch.decreaseRefCount();
 				main.heap.GarbageCollection.syncPoint();
 			}
 			while (self.regionUpdateQueue.popFront()) |updateRequest| {
-				self.mutex.unlock();
-				defer self.mutex.lock();
+				self.mutex.unlock(main.io);
+				defer self.mutex.lockUncancelable(main.io);
 				updateRequest.region.store();
 				updateRequest.region.decreaseRefCount();
 				main.heap.GarbageCollection.syncPoint();
 			}
-			self.mutex.unlock();
+			self.mutex.unlock(main.io);
 			main.io.sleep(.fromMilliseconds(1), .awake) catch {};
 			main.heap.GarbageCollection.syncPoint();
-			self.mutex.lock();
+			self.mutex.lockUncancelable(main.io);
 			if (main.threadPool.queueSize() == 0 and self.chunkUpdateQueue.peekFront() == null and self.regionUpdateQueue.peekFront() == null) break;
 		}
 		std.log.info("Finished LOD update.", .{});
@@ -1081,7 +1081,7 @@ pub const ServerWorld = struct { // MARK: ServerWorld
 	}
 
 	fn tick(self: *ServerWorld) void {
-		ChunkManager.mutex.lock();
+		ChunkManager.mutex.lockUncancelable(main.io);
 		var iter = ChunkManager.simulationChunkHashMap.valueIterator();
 		var currentChunks: main.ListUnmanaged(*SimulationChunk) = .initCapacity(main.stackAllocator, iter.len);
 		defer currentChunks.deinit(main.stackAllocator);
@@ -1089,7 +1089,7 @@ pub const ServerWorld = struct { // MARK: ServerWorld
 			simulationChunk.*.increaseRefCount();
 			currentChunks.append(main.stackAllocator, simulationChunk.*);
 		}
-		ChunkManager.mutex.unlock();
+		ChunkManager.mutex.unlock(main.io);
 
 		for (currentChunks.items) |simulationChunk| {
 			defer simulationChunk.decreaseRefCount();
@@ -1135,18 +1135,18 @@ pub const ServerWorld = struct { // MARK: ServerWorld
 		// Stores at least one chunk and one region per iteration.
 		// All chunks and regions will be stored within the storage time.
 		const insertionTime = newTime.subDuration(main.settings.storageTime);
-		self.mutex.lock();
-		defer self.mutex.unlock();
+		self.mutex.lockUncancelable(main.io);
+		defer self.mutex.unlock(main.io);
 		while (self.chunkUpdateQueue.popFront()) |updateRequest| {
-			self.mutex.unlock();
-			defer self.mutex.lock();
+			self.mutex.unlock(main.io);
+			defer self.mutex.lockUncancelable(main.io);
 			updateRequest.ch.save(self);
 			updateRequest.ch.decreaseRefCount();
 			if (updateRequest.milliTimeStamp -% insertionTime.toMilliseconds() <= 0) break;
 		}
 		while (self.regionUpdateQueue.popFront()) |updateRequest| {
-			self.mutex.unlock();
-			defer self.mutex.lock();
+			self.mutex.unlock(main.io);
+			defer self.mutex.lockUncancelable(main.io);
 			updateRequest.region.store();
 			updateRequest.region.decreaseRefCount();
 			if (updateRequest.milliTimeStamp -% insertionTime.toMilliseconds() <= 0) break;
@@ -1187,8 +1187,8 @@ pub const ServerWorld = struct { // MARK: ServerWorld
 		const otherChunk = self.getSimulationChunkAndIncreaseRefCount(chunkPos[0], chunkPos[1], chunkPos[2]) orelse return null;
 		defer otherChunk.decreaseRefCount();
 		const ch = otherChunk.getChunk() orelse return null;
-		ch.mutex.lock();
-		defer ch.mutex.unlock();
+		ch.mutex.lockUncancelable(main.io);
+		defer ch.mutex.unlock(main.io);
 		return ch.getBlock(x - ch.super.pos.wx, y - ch.super.pos.wy, z - ch.super.pos.wz);
 	}
 
@@ -1197,8 +1197,8 @@ pub const ServerWorld = struct { // MARK: ServerWorld
 		const otherChunk = self.getSimulationChunkAndIncreaseRefCount(chunkPos[0], chunkPos[1], chunkPos[2]) orelse return null;
 		defer otherChunk.decreaseRefCount();
 		const ch = otherChunk.getChunk() orelse return null;
-		ch.mutex.lock();
-		defer ch.mutex.unlock();
+		ch.mutex.lockUncancelable(main.io);
+		defer ch.mutex.unlock(main.io);
 		const block = ch.getBlock(x - ch.super.pos.wx, y - ch.super.pos.wy, z - ch.super.pos.wz);
 		if (block.blockEntity()) |blockEntity| {
 			blockEntity.getServerToClientData(.{x, y, z}, &ch.super, blockEntityDataWriter);
@@ -1212,15 +1212,15 @@ pub const ServerWorld = struct { // MARK: ServerWorld
 		const baseChunk = ChunkManager.getOrGenerateChunkAndIncreaseRefCount(.{.wx = wx & ~@as(i32, chunk.chunkMask), .wy = wy & ~@as(i32, chunk.chunkMask), .wz = wz & ~@as(i32, chunk.chunkMask), .voxelSize = 1});
 		defer baseChunk.decreaseRefCount();
 		const pos: chunk.BlockPos = .fromWorldCoords(wx, wy, wz);
-		baseChunk.mutex.lock();
+		baseChunk.mutex.lockUncancelable(main.io);
 		const currentBlock = baseChunk.getBlock(pos.x, pos.y, pos.z);
 		if (oldBlock != null) {
 			if (oldBlock.? != currentBlock) {
-				baseChunk.mutex.unlock();
+				baseChunk.mutex.unlock(main.io);
 				return currentBlock;
 			}
 		}
-		baseChunk.mutex.unlock();
+		baseChunk.mutex.unlock(main.io);
 
 		var newBlock = _newBlock;
 		for (chunk.Neighbor.iterable) |neighbor| {
@@ -1238,8 +1238,8 @@ pub const ServerWorld = struct { // MARK: ServerWorld
 				ch.decreaseRefCount();
 			};
 
-			ch.mutex.lock();
-			defer ch.mutex.unlock();
+			ch.mutex.lockUncancelable(main.io);
+			defer ch.mutex.unlock(main.io);
 
 			var neighborBlock = ch.getBlock(neighborPos.x, neighborPos.y, neighborPos.z);
 			if (neighborBlock.mode().dependsOnNeighbors and neighborBlock.mode().updateData(&neighborBlock, neighbor.reverse(), newBlock)) {
@@ -1249,8 +1249,8 @@ pub const ServerWorld = struct { // MARK: ServerWorld
 				_ = newBlock.mode().updateData(&newBlock, neighbor, neighborBlock);
 			}
 		}
-		baseChunk.mutex.lock();
-		defer baseChunk.mutex.unlock();
+		baseChunk.mutex.lockUncancelable(main.io);
+		defer baseChunk.mutex.unlock(main.io);
 
 		if (currentBlock != _newBlock) {
 			if (currentBlock.blockEntity()) |blockEntity| blockEntity.updateServerData(.{wx, wy, wz}, &baseChunk.super, .remove) catch |err| {
@@ -1303,14 +1303,14 @@ pub const ServerWorld = struct { // MARK: ServerWorld
 	}
 
 	pub fn queueChunkUpdateAndDecreaseRefCount(self: *ServerWorld, ch: *ServerChunk) void {
-		self.mutex.lock();
+		self.mutex.lockUncancelable(main.io);
 		self.chunkUpdateQueue.pushBack(.{.ch = ch, .milliTimeStamp = main.timestamp().toMilliseconds()});
-		self.mutex.unlock();
+		self.mutex.unlock(main.io);
 	}
 
 	pub fn queueRegionFileUpdateAndDecreaseRefCount(self: *ServerWorld, region: *storage.RegionFile) void {
-		self.mutex.lock();
+		self.mutex.lockUncancelable(main.io);
 		self.regionUpdateQueue.pushBack(.{.region = region, .milliTimeStamp = main.timestamp().toMilliseconds()});
-		self.mutex.unlock();
+		self.mutex.unlock(main.io);
 	}
 };

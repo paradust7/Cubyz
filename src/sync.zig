@@ -22,7 +22,7 @@ const ZonElement = main.ZonElement;
 pub const Side = enum { client, server };
 
 pub const ClientSide = struct {
-	pub var mutex: std.Thread.Mutex = .{};
+	pub var mutex: std.Io.Mutex = .init;
 	var commands: utils.CircularBufferQueue(Command) = undefined;
 
 	pub fn init() void {
@@ -35,14 +35,14 @@ pub const ClientSide = struct {
 	}
 
 	pub fn reset() void {
-		mutex.lock();
+		mutex.lockUncancelable(main.io);
 		while (commands.popFront()) |cmd| {
 			var reader = BinaryReader.init(&.{});
 			cmd.finalize(main.globalAllocator, .client, &reader) catch |err| {
 				std.log.err("Got error while cleaning remaining inventory commands: {s}", .{@errorName(err)});
 			};
 		}
-		mutex.unlock();
+		mutex.unlock(main.io);
 	}
 
 	pub fn executeCommand(payload: Command.Payload) void {
@@ -50,8 +50,8 @@ pub const ClientSide = struct {
 			.payload = payload,
 		};
 
-		mutex.lock();
-		defer mutex.unlock();
+		mutex.lockUncancelable(main.io);
+		defer mutex.unlock(main.io);
 		cmd.do(main.globalAllocator, .client, null, main.game.Player.gamemode.raw) catch unreachable;
 		const data = cmd.serializePayload(main.stackAllocator);
 		defer main.stackAllocator.free(data);
@@ -60,14 +60,14 @@ pub const ClientSide = struct {
 	}
 
 	pub fn receiveConfirmation(reader: *BinaryReader) !void {
-		mutex.lock();
-		defer mutex.unlock();
+		mutex.lockUncancelable(main.io);
+		defer mutex.unlock(main.io);
 		try commands.popFront().?.finalize(main.globalAllocator, .client, reader);
 	}
 
 	pub fn receiveFailure() void {
-		mutex.lock();
-		defer mutex.unlock();
+		mutex.lockUncancelable(main.io);
+		defer mutex.unlock(main.io);
 		var tempData = main.List(Command).init(main.stackAllocator);
 		defer tempData.deinit();
 		while (commands.popBack()) |_cmd| {
@@ -90,8 +90,8 @@ pub const ClientSide = struct {
 	}
 
 	pub fn receiveSyncOperation(reader: *BinaryReader) !void {
-		mutex.lock();
-		defer mutex.unlock();
+		mutex.lockUncancelable(main.io);
+		defer mutex.unlock(main.io);
 		var tempData = main.List(Command).init(main.stackAllocator);
 		defer tempData.deinit();
 		while (commands.popBack()) |_cmd| {
@@ -108,8 +108,8 @@ pub const ClientSide = struct {
 	}
 
 	fn setGamemode(gamemode: Gamemode) void {
-		mutex.lock();
-		defer mutex.unlock();
+		mutex.lockUncancelable(main.io);
+		defer mutex.unlock(main.io);
 		main.game.Player.setGamemode(gamemode);
 		var tempData = main.List(Command).init(main.stackAllocator);
 		defer tempData.deinit();
@@ -1452,7 +1452,7 @@ pub const Command = struct { // MARK: Command
 			if (!switch (costOfChange) {
 				.no => false,
 				.yes => true,
-				.yes_costsDurability => |_| stack.item == .proceduralItem,
+				.yes_costsDurability => stack.item == .proceduralItem,
 				.yes_costsItems => |amount| stack.amount >= amount,
 			}) {
 				if (ctx.side == .server) {

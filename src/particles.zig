@@ -166,7 +166,7 @@ pub const ParticleSystem = struct {
 	var particlesLocal: [maxCapacity]ParticleLocal = undefined;
 	var previousPlayerPos: Vec3d = undefined;
 
-	var mutex: std.Thread.Mutex = .{};
+	var mutex: std.Io.Mutex = .init;
 	var networkCreationQueue: main.ListUnmanaged(struct { emitter: Emitter, pos: Vec3d, count: u32 }) = .{};
 
 	var particlesSSBO: SSBO = undefined;
@@ -205,14 +205,14 @@ pub const ParticleSystem = struct {
 	}
 
 	pub fn update(deltaTime: f32) void {
-		mutex.lock();
+		mutex.lockUncancelable(main.io);
 		if (networkCreationQueue.items.len != 0) {
 			for (networkCreationQueue.items) |creation| {
 				creation.emitter.spawnParticles(creation.pos, creation.count);
 			}
 			networkCreationQueue.clearRetainingCapacity();
 		}
-		mutex.unlock();
+		mutex.unlock(main.io);
 
 		const vecDeltaTime: Vec4f = @as(Vec4f, @splat(deltaTime));
 		const playerPos = game.Player.getEyePosBlocking();
@@ -354,8 +354,8 @@ pub const ParticleSystem = struct {
 	}
 
 	pub fn addParticlesFromNetwork(emitter: Emitter, pos: Vec3d, count: u32) void {
-		mutex.lock();
-		defer mutex.unlock();
+		mutex.lockUncancelable(main.io);
+		defer mutex.unlock(main.io);
 		networkCreationQueue.append(main.worldArena, .{.emitter = emitter, .pos = pos, .count = count});
 	}
 };

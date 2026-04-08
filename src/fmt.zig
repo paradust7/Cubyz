@@ -30,7 +30,7 @@ pub const FormatArg = union(enum) {
 			.pointer => |ptr| {
 				if (ptr.size == .one and @typeInfo(ptr.child) == .array and @typeInfo(ptr.child).array.child == u8) return .{.string = val.*};
 				if (ptr.size == .slice and ptr.child == u8) return .{.string = val.*};
-				if ((ptr.size == .many or ptr.size == .c) and ptr.child == u8) return .{.nullTerminatedString = val.*};
+				if ((ptr.size == .many or ptr.size == .c) and ptr.child == u8 and ptr.sentinel() != null and ptr.sentinel().? == 0) return .{.nullTerminatedString = val.*};
 
 				if (ptr.size == .one) return .fromAnytype(ptr.child, val.*);
 			},
@@ -54,7 +54,7 @@ pub const FormatArg = union(enum) {
 				try writer.print("{any}", .{@as(*const T, @ptrCast(@alignCast(ptr))).*});
 			}
 		}.genericFormat;
-		return .{.anyFormatFunction = .{.val = val, .function = genericFormat}};
+		return .{.anyFormatFunction = .{.val = @ptrCast(val), .function = genericFormat}};
 	}
 };
 

@@ -24,8 +24,8 @@ pub var window = GuiWindow{
 };
 
 fn renderConnectionData(conn: *main.network.Connection, name: []const u8, y: *f32) void {
-	conn.mutex.lock();
-	defer conn.mutex.unlock();
+	conn.mutex.lockUncancelable(main.io);
+	defer conn.mutex.unlock(main.io);
 	var unconfirmed: [3]usize = @splat(0);
 	var queued: [3]usize = @splat(0);
 	conn.lossyChannel.getStatistics(&unconfirmed[0], &queued[0]);

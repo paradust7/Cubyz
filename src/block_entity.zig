@@ -127,7 +127,7 @@ fn BlockEntityDataStorage(T: type) type { // MARK: BlockEntityDataStorage
 	return struct {
 		pub const DataT = T;
 		var storage: main.utils.SparseSet(DataT, BlockEntity) = undefined;
-		pub var mutex: std.Thread.Mutex = .{};
+		pub var mutex: std.Io.Mutex = .{};
 
 		pub fn init() void {
 			storage = .{};
@@ -144,14 +144,14 @@ fn BlockEntityDataStorage(T: type) type { // MARK: BlockEntityDataStorage
 			const entity: BlockEntity = .create();
 			const localPos = chunk.getLocalBlockPos(pos);
 
-			chunk.blockPosToEntityDataMapMutex.lock();
+			chunk.blockPosToEntityDataMapMutex.lockUncancelable(main.io);
 			chunk.blockPosToEntityDataMap.put(main.globalAllocator.allocator, localPos, entity) catch unreachable;
-			chunk.blockPosToEntityDataMapMutex.unlock();
+			chunk.blockPosToEntityDataMapMutex.unlock(main.io);
 			return entity;
 		}
 		pub fn add(pos: Vec3i, value: DataT, chunk: *Chunk) void {
-			mutex.lock();
-			defer mutex.unlock();
+			mutex.lockUncancelable(main.io);
+			defer mutex.unlock(main.io);
 
 			const entity = createEntry(pos, chunk);
 			storage.set(main.globalAllocator, entity, value);
@@ -162,14 +162,14 @@ fn BlockEntityDataStorage(T: type) type { // MARK: BlockEntityDataStorage
 			return storage.fetchRemove(entity) catch null;
 		}
 		pub fn remove(pos: Vec3i, chunk: *Chunk) ?DataT {
-			mutex.lock();
-			defer mutex.unlock();
+			mutex.lockUncancelable(main.io);
+			defer mutex.unlock(main.io);
 
 			const localPos = chunk.getLocalBlockPos(pos);
 
-			chunk.blockPosToEntityDataMapMutex.lock();
+			chunk.blockPosToEntityDataMapMutex.lockUncancelable(main.io);
 			const entityNullable = chunk.blockPosToEntityDataMap.fetchRemove(localPos);
-			chunk.blockPosToEntityDataMapMutex.unlock();
+			chunk.blockPosToEntityDataMapMutex.unlock(main.io);
 
 			const entry = entityNullable orelse return null;
 
@@ -186,8 +186,8 @@ fn BlockEntityDataStorage(T: type) type { // MARK: BlockEntityDataStorage
 
 			const localPos = chunk.getLocalBlockPos(pos);
 
-			chunk.blockPosToEntityDataMapMutex.lock();
-			defer chunk.blockPosToEntityDataMapMutex.unlock();
+			chunk.blockPosToEntityDataMapMutex.lockUncancelable(main.io);
+			defer chunk.blockPosToEntityDataMapMutex.unlock(main.io);
 
 			const entity = chunk.blockPosToEntityDataMap.get(localPos) orelse return null;
 			return storage.get(entity);
@@ -228,8 +228,8 @@ pub const BlockEntityTypes = struct { // MARK: BlockEntityTypes
 			const simChunk = main.server.world.?.getSimulationChunkAndIncreaseRefCount(pos[0], pos[1], pos[2]) orelse return;
 			defer simChunk.decreaseRefCount();
 			const ch = simChunk.getChunk() orelse return;
-			ch.mutex.lock();
-			defer ch.mutex.unlock();
+			ch.mutex.lockUncancelable(main.io);
+			defer ch.mutex.unlock(main.io);
 			ch.setChanged();
 		}
 
@@ -240,8 +240,8 @@ pub const BlockEntityTypes = struct { // MARK: BlockEntityTypes
 		pub fn onLoadClient(_: Vec3i, _: *Chunk, _: *BinaryReader) ErrorSet!void {}
 		pub fn onUnloadClient(_: BlockEntity) void {}
 		pub fn onLoadServer(pos: Vec3i, chunk: *Chunk, reader: *BinaryReader) ErrorSet!void {
-			StorageServer.mutex.lock();
-			defer StorageServer.mutex.unlock();
+			StorageServer.mutex.lockUncancelable(main.io);
+			defer StorageServer.mutex.unlock(main.io);
 
 			const data = StorageServer.getOrPut(pos, chunk);
 			std.debug.assert(!data.foundExisting);
@@ -249,14 +249,14 @@ pub const BlockEntityTypes = struct { // MARK: BlockEntityTypes
 		}
 
 		pub fn onUnloadServer(entity: BlockEntity) void {
-			StorageServer.mutex.lock();
+			StorageServer.mutex.lockUncancelable(main.io);
 			const data = StorageServer.removeAtIndex(entity) orelse unreachable;
-			StorageServer.mutex.unlock();
+			StorageServer.mutex.unlock(main.io);
 			main.items.Inventory.ServerSide.destroyExternallyManagedInventory(data.invId);
 		}
 		pub fn onStoreServerToDisk(entity: BlockEntity, writer: *BinaryWriter) void {
-			StorageServer.mutex.lock();
-			defer StorageServer.mutex.unlock();
+			StorageServer.mutex.lockUncancelable(main.io);
+			defer StorageServer.mutex.unlock(main.io);
 			const data = StorageServer.getByIndex(entity) orelse return;
 
 			const inv = main.items.Inventory.ServerSide.getInventoryFromId(data.invId);
@@ -276,9 +276,9 @@ pub const BlockEntityTypes = struct { // MARK: BlockEntityTypes
 					const chestComponent = StorageServer.remove(pos, chunk) orelse return;
 					main.items.Inventory.ServerSide.destroyAndDropExternallyManagedInventory(chestComponent.invId, pos);
 				},
-				.update => |_| {
-					StorageServer.mutex.lock();
-					defer StorageServer.mutex.unlock();
+				.update => {
+					StorageServer.mutex.lockUncancelable(main.io);
+					defer StorageServer.mutex.unlock(main.io);
 					const data = StorageServer.getOrPut(pos, chunk);
 					if (data.foundExisting) return;
 					var reader = BinaryReader.init(&.{});
@@ -305,14 +305,14 @@ pub const BlockEntityTypes = struct { // MARK: BlockEntityTypes
 			fn deinit(self: @This()) void {
 				main.globalAllocator.free(self.text);
 				if (self.renderedTexture) |texture| {
-					textureDeinitLock.lock();
-					defer textureDeinitLock.unlock();
+					textureDeinitLock.lockUncancelable(main.io);
+					defer textureDeinitLock.unlock(main.io);
 					textureDeinitList.append(texture);
 				}
 			}
 		});
 		var textureDeinitList: main.List(graphics.Texture) = undefined;
-		var textureDeinitLock: std.Thread.Mutex = .{};
+		var textureDeinitLock: std.Io.Mutex = .init;
 		var pipeline: graphics.Pipeline = undefined;
 		var uniforms: struct {
 			ambientLight: c_int,
@@ -362,14 +362,14 @@ pub const BlockEntityTypes = struct { // MARK: BlockEntityTypes
 		}
 
 		pub fn onUnloadClient(entity: BlockEntity) void {
-			StorageClient.mutex.lock();
-			defer StorageClient.mutex.unlock();
+			StorageClient.mutex.lockUncancelable(main.io);
+			defer StorageClient.mutex.unlock(main.io);
 			const entry = StorageClient.removeAtIndex(entity) orelse unreachable;
 			entry.deinit();
 		}
 		pub fn onUnloadServer(entity: BlockEntity) void {
-			StorageServer.mutex.lock();
-			defer StorageServer.mutex.unlock();
+			StorageServer.mutex.lockUncancelable(main.io);
+			defer StorageServer.mutex.unlock(main.io);
 			const entry = StorageServer.removeAtIndex(entity) orelse unreachable;
 			main.globalAllocator.free(entry.text);
 		}
@@ -384,8 +384,8 @@ pub const BlockEntityTypes = struct { // MARK: BlockEntityTypes
 				return;
 			}
 
-			StorageClient.mutex.lock();
-			defer StorageClient.mutex.unlock();
+			StorageClient.mutex.lockUncancelable(main.io);
+			defer StorageClient.mutex.unlock(main.io);
 
 			const data = StorageClient.getOrPut(pos, chunk);
 			if (data.foundExisting) {
@@ -409,8 +409,8 @@ pub const BlockEntityTypes = struct { // MARK: BlockEntityTypes
 				return;
 			}
 
-			StorageServer.mutex.lock();
-			defer StorageServer.mutex.unlock();
+			StorageServer.mutex.lockUncancelable(main.io);
+			defer StorageServer.mutex.unlock(main.io);
 
 			const newText = event.update.remaining;
 
@@ -426,23 +426,23 @@ pub const BlockEntityTypes = struct { // MARK: BlockEntityTypes
 
 		pub const onStoreServerToClient = onStoreServerToDisk;
 		pub fn onStoreServerToDisk(entity: BlockEntity, writer: *BinaryWriter) void {
-			StorageServer.mutex.lock();
-			defer StorageServer.mutex.unlock();
+			StorageServer.mutex.lockUncancelable(main.io);
+			defer StorageServer.mutex.unlock(main.io);
 
 			const data = StorageServer.getByIndex(entity) orelse return;
 			writer.writeSlice(data.text);
 		}
 		pub fn getServerToClientData(pos: Vec3i, chunk: *Chunk, writer: *BinaryWriter) void {
-			StorageServer.mutex.lock();
-			defer StorageServer.mutex.unlock();
+			StorageServer.mutex.lockUncancelable(main.io);
+			defer StorageServer.mutex.unlock(main.io);
 
 			const data = StorageServer.get(pos, chunk) orelse return;
 			writer.writeSlice(data.text);
 		}
 
 		pub fn getClientToServerData(pos: Vec3i, chunk: *Chunk, writer: *BinaryWriter) void {
-			StorageClient.mutex.lock();
-			defer StorageClient.mutex.unlock();
+			StorageClient.mutex.lockUncancelable(main.io);
+			defer StorageClient.mutex.unlock(main.io);
 
 			const data = StorageClient.get(pos, chunk) orelse return;
 			writer.writeSlice(data.text);
@@ -451,15 +451,15 @@ pub const BlockEntityTypes = struct { // MARK: BlockEntityTypes
 		pub fn updateTextFromClient(pos: Vec3i, newText: []const u8) void {
 			{
 				const mesh = main.renderer.mesh_storage.getMesh(.initFromWorldPos(pos, 1)) orelse return;
-				mesh.mutex.lock();
-				defer mesh.mutex.unlock();
+				mesh.mutex.lockUncancelable(main.io);
+				defer mesh.mutex.unlock(main.io);
 				const localPos = mesh.chunk.getLocalBlockPos(pos);
 				const block = mesh.chunk.data.getValue(localPos.toIndex());
 				const blockEntity = block.blockEntity() orelse return;
 				if (!std.mem.eql(u8, blockEntity.id, "cubyz:sign")) return;
 
-				StorageClient.mutex.lock();
-				defer StorageClient.mutex.unlock();
+				StorageClient.mutex.lockUncancelable(main.io);
+				defer StorageClient.mutex.unlock(main.io);
 
 				const data = StorageClient.getOrPut(pos, mesh.chunk);
 				if (data.foundExisting) {
@@ -480,8 +480,8 @@ pub const BlockEntityTypes = struct { // MARK: BlockEntityTypes
 			var oldFramebufferBinding: c_int = undefined;
 			c.glGetIntegerv(c.GL_DRAW_FRAMEBUFFER_BINDING, &oldFramebufferBinding);
 
-			StorageClient.mutex.lock();
-			defer StorageClient.mutex.unlock();
+			StorageClient.mutex.lockUncancelable(main.io);
+			defer StorageClient.mutex.unlock(main.io);
 
 			for (StorageClient.storage.dense.items) |*signData| {
 				if (signData.renderedTexture != null) continue;

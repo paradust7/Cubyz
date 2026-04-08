@@ -19,7 +19,7 @@ pub const RegionFile = struct { // MARK: RegionFile
 
 	chunks: [regionVolume][]u8 = @splat(&.{}),
 	pos: chunk.ChunkPosition,
-	mutex: std.Thread.Mutex = .{},
+	mutex: std.Io.Mutex = .init,
 	modified: bool = false,
 	refCount: Atomic(u16) = .init(1),
 	storedInHashMap: bool = false,
@@ -48,7 +48,7 @@ pub const RegionFile = struct { // MARK: RegionFile
 		defer main.stackAllocator.free(data);
 		self.load(path, data) catch {
 			std.log.err("Corrupted region file: {s}", .{path});
-			if (@errorReturnTrace()) |trace| std.log.info("{f}", .{std.debug.FormatStackTrace{.stack_trace = trace.*, .tty_config = .no_color}});
+			if (@errorReturnTrace()) |trace| std.log.info("{f}", .{std.debug.FormatStackTrace{.stack_trace = trace.*, .terminal_mode = .no_color}});
 		};
 		return self;
 	}
@@ -116,8 +116,8 @@ pub const RegionFile = struct { // MARK: RegionFile
 	}
 
 	pub fn store(self: *RegionFile) void {
-		self.mutex.lock();
-		defer self.mutex.unlock();
+		self.mutex.lockUncancelable(main.io);
+		defer self.mutex.unlock(main.io);
 		self.modified = false;
 
 		var totalSize: usize = 0;
@@ -158,8 +158,8 @@ pub const RegionFile = struct { // MARK: RegionFile
 	}
 
 	pub fn storeChunk(self: *RegionFile, ch: []const u8, relX: usize, relY: usize, relZ: usize) void {
-		self.mutex.lock();
-		defer self.mutex.unlock();
+		self.mutex.lockUncancelable(main.io);
+		defer self.mutex.unlock(main.io);
 		const index = getIndex(relX, relY, relZ);
 		self.chunks[index] = main.globalAllocator.realloc(self.chunks[index], ch.len);
 		@memcpy(self.chunks[index], ch);
@@ -171,8 +171,8 @@ pub const RegionFile = struct { // MARK: RegionFile
 	}
 
 	pub fn getChunk(self: *RegionFile, allocator: main.heap.NeverFailingAllocator, relX: usize, relY: usize, relZ: usize) ?[]const u8 {
-		self.mutex.lock();
-		defer self.mutex.unlock();
+		self.mutex.lockUncancelable(main.io);
+		defer self.mutex.unlock(main.io);
 		const index = getIndex(relX, relY, relZ);
 		const ch = self.chunks[index];
 		if (ch.len == 0) return null;
@@ -194,12 +194,12 @@ const HashContext = struct {
 	}
 };
 var stillUsedHashMap: std.HashMap(chunk.ChunkPosition, *RegionFile, HashContext, 50) = undefined;
-var hashMapMutex: std.Thread.Mutex = .{};
+var hashMapMutex: std.Io.Mutex = .init;
 
 fn cacheDeinit(region: *RegionFile) void {
 	if (region.refCount.load(.monotonic) != 1) { // Someone else might still use it, so we store it in the hashmap.
-		hashMapMutex.lock();
-		defer hashMapMutex.unlock();
+		hashMapMutex.lockUncancelable(main.io);
+		defer hashMapMutex.unlock(main.io);
 		region.storedInHashMap = true;
 		stillUsedHashMap.put(region.pos, region) catch unreachable;
 	} else {
@@ -207,22 +207,22 @@ fn cacheDeinit(region: *RegionFile) void {
 	}
 }
 fn cacheInit(pos: chunk.ChunkPosition) *RegionFile {
-	hashMapMutex.lock();
+	hashMapMutex.lockUncancelable(main.io);
 	if (stillUsedHashMap.fetchRemove(pos)) |kv| {
 		const region = kv.value;
 		region.storedInHashMap = false;
-		hashMapMutex.unlock();
+		hashMapMutex.unlock(main.io);
 		return region;
 	}
-	hashMapMutex.unlock();
+	hashMapMutex.unlock(main.io);
 	const path: []const u8 = std.fmt.allocPrint(main.stackAllocator.allocator, "saves/{s}/chunks", .{server.world.?.path}) catch unreachable;
 	defer main.stackAllocator.free(path);
 	return RegionFile.init(pos, path);
 }
 fn tryHashmapDeinit(region: *RegionFile) void {
 	{
-		hashMapMutex.lock();
-		defer hashMapMutex.unlock();
+		hashMapMutex.lockUncancelable(main.io);
+		defer hashMapMutex.unlock(main.io);
 		if (!region.storedInHashMap) return;
 		std.debug.assert(stillUsedHashMap.fetchRemove(region.pos).?.value == region);
 		region.storedInHashMap = false;
@@ -398,8 +398,8 @@ pub const ChunkCompression = struct { // MARK: ChunkCompression
 	}
 
 	pub fn compressBlockEntityData(ch: *chunk.Chunk, comptime target: Target, writer: *BinaryWriter) void {
-		ch.blockPosToEntityDataMapMutex.lock();
-		defer ch.blockPosToEntityDataMapMutex.unlock();
+		ch.blockPosToEntityDataMapMutex.lockUncancelable(main.io);
+		defer ch.blockPosToEntityDataMapMutex.unlock(main.io);
 
 		if (ch.blockPosToEntityDataMap.count() == 0) return;
 

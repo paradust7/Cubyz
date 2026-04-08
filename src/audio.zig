@@ -101,14 +101,14 @@ const AudioData = struct {
 };
 
 var activeTasks: main.ListUnmanaged([]const u8) = .{};
-var taskMutex: std.Thread.Mutex = .{};
+var taskMutex: std.Io.Mutex = .init;
 
 var musicCache: utils.Cache(AudioData, 4, 4, AudioData.deinit) = .{};
 
 fn findMusic(musicId: []const u8) ?[]f32 {
 	{
-		taskMutex.lock();
-		defer taskMutex.unlock();
+		taskMutex.lockUncancelable(main.io);
+		defer taskMutex.unlock(main.io);
 		if (musicCache.find(AudioData{.musicId = musicId}, null)) |musicData| {
 			return musicData.data;
 		}
@@ -139,8 +139,8 @@ const MusicLoadTask = struct {
 			.musicId = main.globalAllocator.dupe(u8, musicId),
 		};
 		main.threadPool.addTask(task, &vtable);
-		taskMutex.lock();
-		defer taskMutex.unlock();
+		taskMutex.lockUncancelable(main.io);
+		defer taskMutex.unlock(main.io);
 		activeTasks.append(main.globalAllocator, task.musicId);
 	}
 
@@ -162,13 +162,13 @@ const MusicLoadTask = struct {
 	}
 
 	pub fn clean(self: *MusicLoadTask) void {
-		taskMutex.lock();
+		taskMutex.lockUncancelable(main.io);
 		var index: usize = 0;
 		while (index < activeTasks.items.len) : (index += 1) {
 			if (activeTasks.items[index].ptr == self.musicId.ptr) break;
 		}
 		_ = activeTasks.swapRemove(index);
-		taskMutex.unlock();
+		taskMutex.unlock(main.io);
 		main.globalAllocator.free(self.musicId);
 		main.globalAllocator.destroy(self);
 	}
@@ -198,8 +198,8 @@ pub fn init() error{miniaudioError}!void {
 pub fn deinit() void {
 	handleError(c.ma_device_stop(&device)) catch {};
 	c.ma_device_uninit(&device);
-	mutex.lock();
-	defer mutex.unlock();
+	mutex.lockUncancelable(main.io);
+	defer mutex.unlock(main.io);
 	main.threadPool.closeAllTasksOfType(&MusicLoadTask.vtable);
 	musicCache.clear();
 	activeTasks.deinit(main.globalAllocator);
@@ -245,20 +245,20 @@ const animationLengthInSeconds = 5.0;
 var curIndex: u16 = 0;
 var curEndIndex: std.atomic.Value(u16) = .{.value = sampleRate/60 & ~@as(u16, 1)};
 
-var mutex: std.Thread.Mutex = .{};
+var mutex: std.Io.Mutex = .init;
 var preferredMusic: []const u8 = "";
 
 pub fn setMusic(music: []const u8) void {
-	mutex.lock();
-	defer mutex.unlock();
+	mutex.lockUncancelable(main.io);
+	defer mutex.unlock(main.io);
 	if (std.mem.eql(u8, music, preferredMusic)) return;
 	main.globalAllocator.free(preferredMusic);
 	preferredMusic = main.globalAllocator.dupe(u8, music);
 }
 
 fn addMusic(buffer: []f32) void {
-	mutex.lock();
-	defer mutex.unlock();
+	mutex.lockUncancelable(main.io);
+	defer mutex.unlock(main.io);
 	if (!std.mem.eql(u8, preferredMusic, activeMusicId)) {
 		if (activeMusicId.len == 0) {
 			if (findMusic(preferredMusic)) |musicBuffer| {

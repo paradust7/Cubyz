@@ -47,13 +47,13 @@ fn extractColor(in: u32) [3]u8 {
 
 pub const ChannelChunk = struct {
 	data: main.utils.PaletteCompressedRegion(LightValue, chunk.chunkVolume),
-	mutex: std.Thread.Mutex,
+	mutex: std.Io.Mutex,
 	ch: *chunk.Chunk,
 	isSun: bool,
 
 	pub fn init(ch: *chunk.Chunk, isSun: bool) *ChannelChunk {
 		const self = memoryPool.create();
-		self.mutex = .{};
+		self.mutex = .init;
 		self.ch = ch;
 		self.isSun = isSun;
 		self.data.init();
@@ -116,7 +116,7 @@ pub const ChannelChunk = struct {
 			}
 		}
 
-		self.mutex.lock();
+		self.mutex.lockUncancelable(main.io);
 		while (lightQueue.popFront()) |entry| {
 			const pos = entry.pos;
 			const oldValue: [3]u8 = self.data.getValue(pos.toIndex()).toArray();
@@ -147,7 +147,7 @@ pub const ChannelChunk = struct {
 			}
 		}
 		self.data.optimizeLayout();
-		self.mutex.unlock();
+		self.mutex.unlock(main.io);
 		self.addSelfToLightRefreshList(lightRefreshList);
 
 		for (chunk.Neighbor.iterable) |neighbor| {
@@ -176,7 +176,7 @@ pub const ChannelChunk = struct {
 		}
 		var isFirstIteration: bool = isFirstBlock;
 
-		self.mutex.lock();
+		self.mutex.lockUncancelable(main.io);
 		while (lightQueue.popFront()) |entry| {
 			const pos: BlockPos = entry.pos;
 			const oldValue: [3]u8 = self.data.getValue(pos.toIndex()).toArray();
@@ -232,7 +232,7 @@ pub const ChannelChunk = struct {
 				lightQueue.pushBack(result);
 			}
 		}
-		self.mutex.unlock();
+		self.mutex.unlock(main.io);
 		self.addSelfToLightRefreshList(lightRefreshList);
 
 		for (chunk.Neighbor.iterable) |neighbor| {
@@ -323,9 +323,9 @@ pub const ChannelChunk = struct {
 
 	pub fn propagateUniformSun(self: *ChannelChunk, lightRefreshList: *main.List(chunk.ChunkPosition)) void {
 		std.debug.assert(self.isSun);
-		self.mutex.lock();
+		self.mutex.lockUncancelable(main.io);
 		self.data.fillUniform(.fromArray(.{255, 255, 255}));
-		self.mutex.unlock();
+		self.mutex.unlock(main.io);
 		const val = 255 -| 8*|@as(u8, @intCast(self.ch.pos.voxelSize));
 		var lightQueue = main.utils.CircularBufferQueue(Entry).init(main.stackAllocator, 1 << 12);
 		defer lightQueue.deinit();
@@ -388,7 +388,7 @@ pub const ChannelChunk = struct {
 			var entryList = entries.entries;
 			defer entryList.deinit(main.stackAllocator);
 			const channelChunk = if (mesh) |_mesh| _mesh.lightingData[@intFromBool(self.isSun)] else self;
-			channelChunk.mutex.lock();
+			channelChunk.mutex.lockUncancelable(main.io);
 			for (entryList.items) |entry| {
 				var value = channelChunk.data.getValue(entry.toIndex()).toArray();
 				const light = if (self.isSun) .{0, 0, 0} else extractColor(channelChunk.ch.data.getValue(entry.toIndex()).light());
@@ -401,7 +401,7 @@ pub const ChannelChunk = struct {
 				channelChunk.data.setValue(entry.toIndex(), .fromArray(.{0, 0, 0}));
 				lightQueue.pushBack(.{.pos = entry, .value = value, .sourceDir = 6, .activeValue = 0b111});
 			}
-			channelChunk.mutex.unlock();
+			channelChunk.mutex.unlock(main.io);
 			channelChunk.propagateDirect(&lightQueue, lightRefreshList);
 		}
 	}

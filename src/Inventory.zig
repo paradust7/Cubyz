@@ -39,8 +39,8 @@ pub const ClientSide = struct {
 	}
 
 	fn nextId() InventoryId {
-		main.sync.ClientSide.mutex.lock();
-		defer main.sync.ClientSide.mutex.unlock();
+		main.sync.ClientSide.mutex.lockUncancelable(main.io);
+		defer main.sync.ClientSide.mutex.unlock(main.io);
 		if (freeIdList.popOrNull()) |id| {
 			return id;
 		}
@@ -149,8 +149,8 @@ pub const ServerSide = struct { // MARK: ServerSide
 					cb(self.inv.source);
 				}
 				if (self.managed == .internallyManaged) {
-					inventoryCreationMutex.lock();
-					defer inventoryCreationMutex.unlock();
+					inventoryCreationMutex.lockUncancelable(main.io);
+					defer inventoryCreationMutex.unlock(main.io);
 					self.deinit();
 				}
 			}
@@ -160,7 +160,7 @@ pub const ServerSide = struct { // MARK: ServerSide
 	var inventories: main.utils.VirtualList(ServerInventory, 1 << 24) = undefined;
 	var maxId: InventoryId = @enumFromInt(0);
 	var freeIdList: main.List(InventoryId) = undefined;
-	var inventoryCreationMutex: std.Thread.Mutex = .{};
+	var inventoryCreationMutex: std.Io.Mutex = .init;
 
 	pub fn init() void {
 		inventories = .init();
@@ -205,8 +205,8 @@ pub const ServerSide = struct { // MARK: ServerSide
 	}
 
 	pub fn createExternallyManagedInventory(len: usize, source: Source, data: *BinaryReader, callbacks: Callbacks) InventoryId {
-		inventoryCreationMutex.lock();
-		defer inventoryCreationMutex.unlock();
+		inventoryCreationMutex.lockUncancelable(main.io);
+		defer inventoryCreationMutex.unlock(main.io);
 		const inventory = ServerInventory.init(len, source, .externallyManaged, callbacks);
 		inventories.items()[@intFromEnum(inventory.inv.id)] = inventory;
 		inventory.inv.fromBytes(data);
@@ -221,8 +221,8 @@ pub const ServerSide = struct { // MARK: ServerSide
 		}
 		std.debug.assert(inventories.items()[@intFromEnum(invId)].managed == .externallyManaged);
 
-		inventoryCreationMutex.lock();
-		defer inventoryCreationMutex.unlock();
+		inventoryCreationMutex.lockUncancelable(main.io);
+		defer inventoryCreationMutex.unlock(main.io);
 		inventories.items()[@intFromEnum(invId)].deinit();
 	}
 
@@ -240,8 +240,8 @@ pub const ServerSide = struct { // MARK: ServerSide
 			);
 			itemStack.* = .{};
 		}
-		inventoryCreationMutex.lock();
-		defer inventoryCreationMutex.unlock();
+		inventoryCreationMutex.lockUncancelable(main.io);
+		defer inventoryCreationMutex.unlock(main.io);
 		inv.deinit();
 	}
 
@@ -259,8 +259,8 @@ pub const ServerSide = struct { // MARK: ServerSide
 					},
 					else => {},
 				}
-				inventoryCreationMutex.lock();
-				defer inventoryCreationMutex.unlock();
+				inventoryCreationMutex.lockUncancelable(main.io);
+				defer inventoryCreationMutex.unlock(main.io);
 				for (inventories.items()) |*inv| {
 					if (std.meta.eql(inv.source, source)) {
 						inv.addUser(user, clientId);
@@ -292,9 +292,9 @@ pub const ServerSide = struct { // MARK: ServerSide
 			.alreadyFreed => unreachable,
 		}
 
-		inventoryCreationMutex.lock();
+		inventoryCreationMutex.lockUncancelable(main.io);
 		const inventory = ServerInventory.init(len, source, .internallyManaged, callbacks);
-		inventoryCreationMutex.unlock();
+		inventoryCreationMutex.unlock(main.io);
 
 		inventories.items()[@intFromEnum(inventory.inv.id)] = inventory;
 		inventories.items()[@intFromEnum(inventory.inv.id)].addUser(user, clientId);
@@ -322,8 +322,8 @@ pub const ServerSide = struct { // MARK: ServerSide
 
 	pub fn getInventoryFromSource(source: Source) ?Inventory {
 		sync.threadContext.assertCorrectContext(.server);
-		inventoryCreationMutex.lock();
-		defer inventoryCreationMutex.unlock();
+		inventoryCreationMutex.lockUncancelable(main.io);
+		defer inventoryCreationMutex.unlock(main.io);
 		for (inventories.items()) |inv| {
 			if (std.meta.eql(inv.source, source)) {
 				return inv.inv;
@@ -437,8 +437,8 @@ pub const ClientInventory = struct { // MARK: ClientInventory
 		if (main.game.world.?.connected) {
 			sync.ClientSide.executeCommand(.{.close = .{.inv = self.super, .allocator = allocator}});
 		} else {
-			main.sync.ClientSide.mutex.lock();
-			defer main.sync.ClientSide.mutex.unlock();
+			main.sync.ClientSide.mutex.lockUncancelable(main.io);
+			defer main.sync.ClientSide.mutex.unlock(main.io);
 			self.super._deinit(allocator, .client);
 		}
 	}
@@ -525,8 +525,8 @@ pub const ClientInventory = struct { // MARK: ClientInventory
 		std.debug.assert(source.type == .workbenchResult);
 		for (destinations) |inv| std.debug.assert(inv.type == .serverShared);
 		const workbenchInv = blk: {
-			main.sync.ClientSide.mutex.lock();
-			defer main.sync.ClientSide.mutex.unlock();
+			main.sync.ClientSide.mutex.lockUncancelable(main.io);
+			defer main.sync.ClientSide.mutex.unlock(main.io);
 			break :blk ClientSide.getInventoryByClientId(source.type.workbenchResult);
 		} orelse return;
 
