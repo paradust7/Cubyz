@@ -94,7 +94,7 @@ pub const BlockEntity = enum(u32) { // MARK: BlockEntity
 
 	var freeIndexList: main.ListUnmanaged(BlockEntity) = .{};
 	var nextIndex: BlockEntity = @enumFromInt(0);
-	var mutex: std.Thread.Mutex = .{};
+	var mutex: std.Io.Mutex = .init;
 
 	fn globalDeinit() void {
 		freeIndexList.deinit(main.globalAllocator);
@@ -108,8 +108,8 @@ pub const BlockEntity = enum(u32) { // MARK: BlockEntity
 	}
 
 	fn create() BlockEntity {
-		mutex.lock();
-		defer mutex.unlock();
+		mutex.lockUncancelable(main.io);
+		defer mutex.unlock(main.io);
 		return freeIndexList.popOrNull() orelse {
 			defer nextIndex = @enumFromInt(@intFromEnum(nextIndex) + 1);
 			return nextIndex;
@@ -117,8 +117,8 @@ pub const BlockEntity = enum(u32) { // MARK: BlockEntity
 	}
 
 	fn destroy(self: BlockEntity) void {
-		mutex.lock();
-		defer mutex.unlock();
+		mutex.lockUncancelable(main.io);
+		defer mutex.unlock(main.io);
 		freeIndexList.append(main.globalAllocator, self);
 	}
 };
@@ -127,7 +127,7 @@ fn BlockEntityDataStorage(T: type) type { // MARK: BlockEntityDataStorage
 	return struct {
 		pub const DataT = T;
 		var storage: main.utils.SparseSet(DataT, BlockEntity) = undefined;
-		pub var mutex: std.Io.Mutex = .{};
+		pub var mutex: std.Io.Mutex = .init;
 
 		pub fn init() void {
 			storage = .{};
