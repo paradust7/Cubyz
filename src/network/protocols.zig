@@ -264,7 +264,13 @@ pub const handShake = struct { // MARK: handShake
 		conn.send(.secure, id, data);
 
 		conn.mutex.lockUncancelable(main.io);
-		conn.handShakeWaiting.waitUncancelable(main.io, &conn.mutex);
+		while (true) {
+			utils.conditionTimedWait(&conn.handShakeWaiting, &conn.mutex, 16_000_000) catch {
+				main.heap.GarbageCollection.syncPoint();
+				continue;
+			};
+			break;
+		}
 		if (conn.connectionState.load(.monotonic) == .disconnectDesired) return error.DisconnectedByServer;
 		conn.mutex.unlock(main.io);
 	}

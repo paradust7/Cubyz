@@ -1,5 +1,4 @@
 const std = @import("std");
-const sign = std.math.sign;
 
 const main = @import("main");
 const Array3D = main.utils.Array3D;
@@ -36,6 +35,10 @@ const perimeter = interpolatedPart*2 + smoothness*4;
 
 fn getValue(noise: Array3D(f32), outerSizeShift: u5, relX: u31, relY: u31, relZ: u31) f32 {
 	return noise.get(relX >> outerSizeShift, relY >> outerSizeShift, relZ >> outerSizeShift);
+}
+
+fn sign(val: f32) i32 {
+	return @intCast(std.math.sign(val));
 }
 
 fn generateSdf(map: *const CaveMapFragment, biomeMap: *const CaveBiomeMapView, additiveOutput: Array3D(f32), subtractiveOutput: Array3D(f32), interpolationSmoothness: Array3D(f32), voxelSize: u31, voxelSizeShift: u5, worldSeed: u64) void {

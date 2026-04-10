@@ -15,7 +15,7 @@ pub const Compression = struct { // MARK: Compression
 		var buffer: [65536]u8 = undefined;
 		var compress = std.compress.flate.Compress.init(&result.writer, &buffer, .raw, level) catch unreachable;
 		compress.writer.writeAll(data) catch unreachable;
-		compress.writer.flush() catch unreachable;
+		compress.finish() catch unreachable;
 		result.writer.flush() catch unreachable;
 		return result.toOwnedSlice() catch unreachable;
 	}
@@ -57,7 +57,7 @@ pub const Compression = struct { // MARK: Compression
 				_ = try comp.writer.writeAll(fileData);
 			}
 		}
-		try comp.writer.flush();
+		try comp.finish();
 		try writer.flush();
 	}
 
@@ -2299,8 +2299,8 @@ pub fn semaphoreTimedWait(s: *std.Io.Semaphore, timeout_ns: u64) error{Timeout}!
 	const duration: std.Io.Duration = .fromNanoseconds(timeout_ns);
 	var buffer: [2]ResultSet = undefined;
 	var select = std.Io.Select(ResultSet).init(main.io, &buffer);
-	select.async(.semaphore_wait, std.Io.Semaphore.wait, .{ s, main.io });
-	select.async(.timeout, std.Io.sleep, .{ main.io, duration, .awake });
+	select.concurrent(.semaphore_wait, std.Io.Semaphore.wait, .{ s, main.io }) catch unreachable;
+	select.concurrent(.timeout, std.Io.sleep, .{ main.io, duration, .awake }) catch unreachable;
 	const result = select.await() catch unreachable;
 	_ = select.cancel();
 	switch (result) {
@@ -2318,8 +2318,8 @@ pub fn conditionTimedWait(cond: *std.Io.Condition, mutex: *std.Io.Mutex, timeout
 	const duration: std.Io.Duration = .fromNanoseconds(timeout_ns);
 	var buffer: [2]ResultSet = undefined;
 	var select = std.Io.Select(ResultSet).init(main.io, &buffer);
-	select.async(.condition_wait, std.Io.Condition.wait, .{ cond, main.io, mutex });
-	select.async(.timeout, std.Io.sleep, .{ main.io, duration, .awake });
+	select.concurrent(.condition_wait, std.Io.Condition.wait, .{ cond, main.io, mutex }) catch unreachable;
+	select.concurrent(.timeout, std.Io.sleep, .{ main.io, duration, .awake }) catch unreachable;
 	const result = select.await() catch unreachable;
 	_ = select.cancel();
 	switch (result) {
