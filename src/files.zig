@@ -104,7 +104,7 @@ pub const Dir = struct {
 	pub fn readToZon(self: Dir, allocator: NeverFailingAllocator, path: []const u8) !ZonElement {
 		const string = try self.read(main.stackAllocator, path);
 		defer main.stackAllocator.free(string);
-		const realPath: ?[]const u8 = self.dir.realPathFileAlloc(main.io, path, main.stackAllocator.allocator) catch null;
+		const realPath: ?[:0]const u8 = self.dir.realPathFileAlloc(main.io, path, main.stackAllocator.allocator) catch null;
 		defer if (realPath) |p| main.stackAllocator.free(p);
 		return ZonElement.parseFromString(allocator, realPath orelse path, string);
 	}
