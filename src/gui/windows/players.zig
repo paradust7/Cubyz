@@ -52,8 +52,8 @@ pub fn onOpen() void {
 			list.add(row);
 		}
 	} else {
-		main.server.connectionManager.mutex.lock();
-		defer main.server.connectionManager.mutex.unlock();
+		main.server.connectionManager.mutex.lockUncancelable(main.io);
+		defer main.server.connectionManager.mutex.unlock(main.io);
 		std.debug.assert(userList.len == 0);
 		userList = main.globalAllocator.alloc(*main.server.User, main.server.connectionManager.connections.items.len);
 		for (main.server.connectionManager.connections.items, 0..) |connection, i| {
@@ -104,9 +104,9 @@ pub fn update() void {
 			onOpen();
 		}
 	} else {
-		main.server.connectionManager.mutex.lock();
+		main.server.connectionManager.mutex.lockUncancelable(main.io);
 		const serverListLen = main.server.connectionManager.connections.items.len;
-		main.server.connectionManager.mutex.unlock();
+		main.server.connectionManager.mutex.unlock(main.io);
 		if (userList.len != serverListLen) {
 			onClose();
 			onOpen();

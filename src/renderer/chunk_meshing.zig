@@ -1245,7 +1245,7 @@ pub const ChunkMesh = struct { // MARK: ChunkMesh
 	pub fn updateBlock(self: *ChunkMesh, blockUpdate: mesh_storage.BlockUpdate) void {
 		const blockPos = chunk.BlockPos.fromWorldCoords(blockUpdate.pos[0], blockUpdate.pos[1], blockUpdate.pos[2]);
 		var newBlock = blockUpdate.newBlock;
-		self.mutex.lock();
+		self.mutex.lockUncancelable(main.io);
 		const oldBlock = self.chunk.data.getValue(blockPos.toIndex());
 
 		if (oldBlock == newBlock) {
@@ -1255,7 +1255,7 @@ pub const ChunkMesh = struct { // MARK: ChunkMesh
 					std.log.err("Got error {s} while trying to apply block entity data {any} in position {} for block {s}", .{@errorName(err), blockUpdate.blockEntityData, blockUpdate.pos, newBlock.id()});
 				};
 			}
-			self.mutex.unlock();
+			self.mutex.unlock(main.io);
 			return;
 		}
 
@@ -1271,7 +1271,7 @@ pub const ChunkMesh = struct { // MARK: ChunkMesh
 		if (self.blockUpdateQueue.len == 1) {
 			BlockUpdateTask.schedule(self.pos);
 		}
-		self.mutex.unlock();
+		self.mutex.unlock(main.io);
 	}
 	const BlockUpdateTask = struct {
 		pos: chunk.ChunkPosition,
@@ -1314,8 +1314,8 @@ pub const ChunkMesh = struct { // MARK: ChunkMesh
 
 				while (true) {
 					const blockUpdatePos = blk: {
-						mesh.mutex.lock();
-						defer mesh.mutex.unlock();
+						mesh.mutex.lockUncancelable(main.io);
+						defer mesh.mutex.unlock(main.io);
 						break :blk mesh.blockUpdateQueue.popFront() orelse break;
 					};
 
