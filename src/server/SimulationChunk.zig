@@ -64,9 +64,9 @@ fn tickBlocksInChunk(_chunk: *ServerChunk, randomTickSpeed: u32) void {
 		const blockIndex = main.random.nextInt(u15, &main.seed);
 		const pos = main.chunk.BlockPos.fromIndex(blockIndex);
 
-		_chunk.mutex.lock();
+		_chunk.mutex.lockUncancelable(main.io);
 		const block = _chunk.getBlock(pos.x, pos.y, pos.z);
-		_chunk.mutex.unlock();
+		_chunk.mutex.unlock(main.io);
 		_ = block.onTick().run(.{.block = block, .chunk = _chunk, .blockPos = pos});
 	}
 }

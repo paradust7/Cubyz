@@ -152,7 +152,7 @@ pub const handShake = struct { // MARK: handShake
 					defer zon.deinit(main.stackAllocator);
 					try conn.manager.world.?.finishHandshake(zon);
 					conn.handShakeState.store(.complete, .monotonic);
-					conn.handShakeWaiting.broadcast(); // Notify the waiting client thread.
+					conn.handShakeWaiting.broadcast(main.io); // Notify the waiting client thread.
 				},
 				.start, .complete => {},
 			}
@@ -263,16 +263,16 @@ pub const handShake = struct { // MARK: handShake
 		conn.secureChannel.finishedCollectingClientVerificationData = true;
 		conn.send(.secure, id, data);
 
-		conn.mutex.lock();
+		conn.mutex.lockUncancelable(main.io);
 		while (true) {
-			conn.handShakeWaiting.timedWait(&conn.mutex, 16_000_000) catch {
+			utils.conditionTimedWait(&conn.handShakeWaiting, &conn.mutex, 16_000_000) catch {
 				main.heap.GarbageCollection.syncPoint();
 				continue;
 			};
 			break;
 		}
 		if (conn.connectionState.load(.monotonic) == .disconnectDesired) return error.DisconnectedByServer;
-		conn.mutex.unlock();
+		conn.mutex.unlock(main.io);
 	}
 };
 
@@ -332,9 +332,9 @@ pub const chunkTransmission = struct { // MARK: chunkTransmission
 		renderer.mesh_storage.updateChunkMesh(ch);
 	}
 	fn sendChunkOverTheNetwork(conn: *Connection, ch: *chunk.ServerChunk) void {
-		ch.mutex.lock();
+		ch.mutex.lockUncancelable(main.io);
 		const chunkData = main.server.storage.ChunkCompression.storeChunk(main.stackAllocator, &ch.super, .toClient, ch.super.pos.voxelSize != 1);
-		ch.mutex.unlock();
+		ch.mutex.unlock(main.io);
 		defer main.stackAllocator.free(chunkData);
 		var writer = utils.BinaryWriter.initCapacity(main.stackAllocator, chunkData.len + 16);
 		defer writer.deinit();
@@ -904,8 +904,8 @@ pub const blockEntityUpdate = struct { // MARK: blockEntityUpdate
 		const simChunk = main.server.world.?.getSimulationChunkAndIncreaseRefCount(pos[0], pos[1], pos[2]) orelse return;
 		defer simChunk.decreaseRefCount();
 		const ch = simChunk.chunk.load(.monotonic) orelse return;
-		ch.mutex.lock();
-		defer ch.mutex.unlock();
+		ch.mutex.lockUncancelable(main.io);
+		defer ch.mutex.unlock(main.io);
 		const block = ch.getBlock(pos[0] - ch.super.pos.wx, pos[1] - ch.super.pos.wy, pos[2] - ch.super.pos.wz);
 		if (block.typ != blockType) return;
 		const blockEntity = block.blockEntity() orelse return;
@@ -917,8 +917,8 @@ pub const blockEntityUpdate = struct { // MARK: blockEntityUpdate
 
 	pub fn sendClientDataUpdateToServer(conn: *Connection, pos: Vec3i) void {
 		const mesh = main.renderer.mesh_storage.getMesh(.initFromWorldPos(pos, 1)) orelse return;
-		mesh.mutex.lock();
-		defer mesh.mutex.unlock();
+		mesh.mutex.lockUncancelable(main.io);
+		defer mesh.mutex.unlock(main.io);
 		const localPos = mesh.chunk.getLocalBlockPos(pos);
 		const block = mesh.chunk.data.getValue(localPos.toIndex());
 		const blockEntity = block.blockEntity() orelse return;
@@ -949,8 +949,8 @@ pub const blockEntityUpdate = struct { // MARK: blockEntityUpdate
 		const simChunk = main.server.world.?.getSimulationChunkAndIncreaseRefCount(pos[0], pos[1], pos[2]) orelse return;
 		defer simChunk.decreaseRefCount();
 		const ch = simChunk.chunk.load(.monotonic) orelse return;
-		ch.mutex.lock();
-		defer ch.mutex.unlock();
+		ch.mutex.lockUncancelable(main.io);
+		defer ch.mutex.unlock(main.io);
 		const block = ch.getBlock(pos[0] - ch.super.pos.wx, pos[1] - ch.super.pos.wy, pos[2] - ch.super.pos.wz);
 		const blockEntity = block.blockEntity() orelse return;
 

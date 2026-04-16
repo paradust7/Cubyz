@@ -137,7 +137,7 @@ pub const User = struct { // MARK: User
 
 	refCount: Atomic(u32) = .init(1),
 
-	mutex: std.Thread.Mutex = .{},
+	mutex: std.Io.Mutex = .init,
 
 	inventoryCommands: main.ListUnmanaged([]const u8) = .{},
 
@@ -319,8 +319,8 @@ pub const User = struct { // MARK: User
 	}
 
 	pub fn getTaskFromJobQueue(self: *User) ?struct { main.utils.ThreadPool.Task, enum { hasMoreTasks, empty } } {
-		self.mutex.lock();
-		defer self.mutex.unlock();
+		self.mutex.lockUncancelable(main.io);
+		defer self.mutex.unlock(main.io);
 		if (vec.lengthSquare(@as(@Vector(3, i64), self.jobQueueLastUpdate.position -% self.lastPos)) > 32*32) {
 			const startTime = main.timestamp();
 			if (self.jobQueueLastUpdate.time.durationTo(startTime).toMilliseconds() > 100 and !self.jobQueueLastUpdate.alreadyInUpdate) {
@@ -356,8 +356,8 @@ pub const User = struct { // MARK: User
 							newTasks.append(main.stackAllocator, task);
 						}
 						user.jobQueue.addMany(newTasks.items);
-						user.mutex.lock();
-						defer user.mutex.unlock();
+						user.mutex.lockUncancelable(main.io);
+						defer user.mutex.unlock(main.io);
 						user.jobQueueLastUpdate = .{
 							.position = user.lastPos,
 							.time = main.timestamp(),
@@ -398,8 +398,8 @@ pub const User = struct { // MARK: User
 	}
 
 	pub fn addTask(self: *User, task: *anyopaque, vtable: *const main.utils.ThreadPool.VTable) void {
-		self.mutex.lock();
-		defer self.mutex.unlock();
+		self.mutex.lockUncancelable(main.io);
+		defer self.mutex.unlock(main.io);
 		self.jobQueue.add(.{
 			.cachedPriority = vtable.getPriority(task),
 			.vtable = vtable,
@@ -421,12 +421,12 @@ pub const User = struct { // MARK: User
 	}
 
 	pub fn update(self: *User) void {
-		self.mutex.lock();
+		self.mutex.lockUncancelable(main.io);
 		self.scheduleJobQueue();
 		const commands = self.inventoryCommands;
 		defer commands.deinit(main.globalAllocator);
 		self.inventoryCommands = .{};
-		self.mutex.unlock();
+		self.mutex.unlock(main.io);
 
 		for (commands.items) |commandData| {
 			defer main.globalAllocator.free(commandData);
@@ -442,8 +442,8 @@ pub const User = struct { // MARK: User
 			};
 		}
 
-		self.mutex.lock();
-		defer self.mutex.unlock();
+		self.mutex.lockUncancelable(main.io);
+		defer self.mutex.unlock(main.io);
 		var time = @as(i16, @truncate(main.timestamp().toMilliseconds())) -% main.settings.entityLookback;
 		time -%= self.timeDifference.difference.load(.monotonic);
 		self.interpolation.update(time, self.lastTime);
@@ -461,14 +461,14 @@ pub const User = struct { // MARK: User
 	}
 
 	pub fn receiveCommand(self: *User, commandData: []const u8) void {
-		self.mutex.lock();
-		defer self.mutex.unlock();
+		self.mutex.lockUncancelable(main.io);
+		defer self.mutex.unlock(main.io);
 		self.inventoryCommands.append(main.globalAllocator, main.globalAllocator.dupe(u8, commandData));
 	}
 
 	pub fn receiveData(self: *User, reader: *BinaryReader) !void {
-		self.mutex.lock();
-		defer self.mutex.unlock();
+		self.mutex.lockUncancelable(main.io);
+		defer self.mutex.unlock(main.io);
 		const position: [3]f64 = try reader.readVec(Vec3d);
 		const velocity: [3]f64 = try reader.readVec(Vec3d);
 		const rotation: [3]f32 = try reader.readVec(Vec3f);
@@ -503,7 +503,7 @@ pub const updatesPerSec: u32 = 20;
 const updateTime: std.Io.Duration = .fromNanoseconds(1000000000/20);
 
 pub var world: ?*ServerWorld = null;
-var userMutex: std.Thread.Mutex = .{};
+var userMutex: std.Io.Mutex = .init;
 var users: main.List(*User) = undefined;
 var userDeinitList: main.utils.ConcurrentQueue(*User) = undefined;
 var userConnectList: main.utils.ConcurrentQueue(*User) = undefined;
@@ -585,8 +585,8 @@ fn deinit() void {
 }
 
 pub fn getUserListAndIncreaseRefCount(allocator: main.heap.NeverFailingAllocator) []*User {
-	userMutex.lock();
-	defer userMutex.unlock();
+	userMutex.lockUncancelable(main.io);
+	defer userMutex.unlock(main.io);
 	const result = allocator.dupe(*User, users.items);
 	for (result) |user| {
 		user.increaseRefCount();
@@ -709,8 +709,8 @@ pub fn removePlayer(user: *User) void { // MARK: removePlayer()
 	if (!user.connected.load(.monotonic)) return;
 
 	const foundUser = blk: {
-		userMutex.lock();
-		defer userMutex.unlock();
+		userMutex.lockUncancelable(main.io);
+		defer userMutex.unlock(main.io);
 		for (users.items, 0..) |other, i| {
 			if (other == user) {
 				_ = users.swapRemove(i);
@@ -788,9 +788,9 @@ pub fn connectInternal(user: *User) void {
 	main.stackAllocator.free(initialList);
 	sendMessage("{s}§#ffff00 joined", .{user.name});
 
-	userMutex.lock();
+	userMutex.lockUncancelable(main.io);
 	users.append(user);
-	userMutex.unlock();
+	userMutex.unlock(main.io);
 	user.conn.handShakeState.store(.complete, .monotonic);
 }
 
@@ -799,8 +799,8 @@ pub fn messageFrom(msg: []const u8, source: *User) void { // MARK: message
 }
 
 fn sendRawMessage(msg: []const u8) void {
-	chatMutex.lock();
-	defer chatMutex.unlock();
+	chatMutex.lockUncancelable(main.io);
+	defer chatMutex.unlock(main.io);
 	std.log.info("Chat: {s}", .{msg}); // TODO use color \033[0;32m
 	const userList = getUserListAndIncreaseRefCount(main.stackAllocator);
 	defer freeUserListAndDecreaseRefCount(main.stackAllocator, userList);
@@ -809,7 +809,7 @@ fn sendRawMessage(msg: []const u8) void {
 	}
 }
 
-var chatMutex: std.Thread.Mutex = .{};
+var chatMutex: std.Io.Mutex = .init;
 pub fn sendMessage(comptime fmt: []const u8, args: anytype) void {
 	const msg = std.fmt.allocPrint(main.stackAllocator.allocator, fmt, args) catch unreachable;
 	defer main.stackAllocator.free(msg);

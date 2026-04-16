@@ -60,7 +60,7 @@ pub const ItemDropManager = struct { // MARK: ItemDropManager
 
 	indices: [maxCapacity]u16 = undefined,
 
-	emptyMutex: std.Thread.Mutex = .{},
+	emptyMutex: std.Io.Mutex = .init,
 	isEmpty: std.bit_set.ArrayBitSet(usize, maxCapacity),
 
 	changeQueue: main.utils.ConcurrentQueue(union(enum) { add: struct { u16, ItemDrop }, remove: u16 }),
@@ -228,9 +228,9 @@ pub const ItemDropManager = struct { // MARK: ItemDropManager
 	}
 
 	pub fn add(self: *ItemDropManager, pos: Vec3d, vel: Vec3d, rot: Vec3f, itemStack: ItemStack, despawnTime: i32, pickupCooldown: i32) void {
-		self.emptyMutex.lock();
+		self.emptyMutex.lockUncancelable(main.io);
 		const i: u16 = @intCast(self.isEmpty.findFirstSet() orelse {
-			self.emptyMutex.unlock();
+			self.emptyMutex.unlock(main.io);
 			std.log.err("Item drop capacitiy limit reached. Failed to add itemStack: {}×{s}", .{itemStack.amount, itemStack.item.id() orelse return});
 			itemStack.item.deinit();
 			return;
@@ -260,12 +260,12 @@ pub const ItemDropManager = struct { // MARK: ItemDropManager
 			}
 		}
 
-		self.emptyMutex.unlock();
+		self.emptyMutex.unlock(main.io);
 		self.changeQueue.pushBack(.{.add = .{i, drop}});
 	}
 
 	fn addWithIndex(self: *ItemDropManager, i: u16, pos: Vec3d, vel: Vec3d, rot: Vec3f, itemStack: ItemStack, despawnTime: i32, pickupCooldown: i32) void {
-		self.emptyMutex.lock();
+		self.emptyMutex.lockUncancelable(main.io);
 		std.debug.assert(self.isEmpty.isSet(i));
 		self.isEmpty.unset(i);
 		const drop = ItemDrop{
@@ -292,7 +292,7 @@ pub const ItemDropManager = struct { // MARK: ItemDropManager
 			}
 		}
 
-		self.emptyMutex.unlock();
+		self.emptyMutex.unlock(main.io);
 		self.changeQueue.pushBack(.{.add = .{i, drop}});
 	}
 
@@ -331,7 +331,7 @@ pub const ItemDropManager = struct { // MARK: ItemDropManager
 
 	fn directRemove(self: *ItemDropManager, i: u16) void {
 		std.debug.assert(self.world != null);
-		self.emptyMutex.lock();
+		self.emptyMutex.lockUncancelable(main.io);
 		self.isEmpty.set(i);
 
 		const list = ZonElement.initArray(main.stackAllocator);
@@ -347,7 +347,7 @@ pub const ItemDropManager = struct { // MARK: ItemDropManager
 			main.network.protocols.entity.send(user.conn, updateData);
 		}
 
-		self.emptyMutex.unlock();
+		self.emptyMutex.unlock(main.io);
 		self.internalRemove(i);
 	}
 
@@ -416,15 +416,15 @@ pub const ItemDropManager = struct { // MARK: ItemDropManager
 		const chunkPos = blockPos & ~@as(Vec3i, @splat(main.chunk.chunkMask));
 		var block: blocks.Block = undefined;
 		if (chunk.super.pos.wx == chunkPos[0] and chunk.super.pos.wy == chunkPos[1] and chunk.super.pos.wz == chunkPos[2]) {
-			chunk.mutex.lock();
-			defer chunk.mutex.unlock();
+			chunk.mutex.lockUncancelable(main.io);
+			defer chunk.mutex.unlock(main.io);
 			block = chunk.getBlock(blockPos[0] - chunk.super.pos.wx, blockPos[1] - chunk.super.pos.wy, blockPos[2] - chunk.super.pos.wz);
 		} else {
 			const otherChunk = self.world.?.getSimulationChunkAndIncreaseRefCount(chunkPos[0], chunkPos[1], chunkPos[2]) orelse return true;
 			defer otherChunk.decreaseRefCount();
 			const ch = otherChunk.getChunk() orelse return true;
-			ch.mutex.lock();
-			defer ch.mutex.unlock();
+			ch.mutex.lockUncancelable(main.io);
+			defer ch.mutex.unlock(main.io);
 			block = ch.getBlock(blockPos[0] - ch.super.pos.wx, blockPos[1] - ch.super.pos.wy, blockPos[2] - ch.super.pos.wz);
 		}
 		return main.game.collision.collideWithBlock(block, blockPos[0], blockPos[1], blockPos[2], pos.*, @splat(radius), @splat(0)) != null;
@@ -469,7 +469,7 @@ pub const ClientItemDropManager = struct { // MARK: ClientItemDropManager
 
 	var instance: ?*ClientItemDropManager = null;
 
-	var mutex: std.Thread.Mutex = .{};
+	var mutex: std.Io.Mutex = .init;
 
 	pub fn init(self: *ClientItemDropManager, allocator: NeverFailingAllocator) void {
 		std.debug.assert(instance == null); // Only one instance allowed.
@@ -499,8 +499,8 @@ pub const ClientItemDropManager = struct { // MARK: ClientItemDropManager
 			pos[data.index] = data.pos;
 			vel[data.index] = data.vel;
 		}
-		mutex.lock();
-		defer mutex.unlock();
+		mutex.lockUncancelable(main.io);
+		defer mutex.unlock(main.io);
 		self.interpolation.updatePosition(@ptrCast(&pos), @ptrCast(&vel), time); // TODO: Only update the ones we actually changed.
 	}
 
@@ -509,16 +509,16 @@ pub const ClientItemDropManager = struct { // MARK: ClientItemDropManager
 		var time = @as(i16, @truncate(main.timestamp().toMilliseconds())) -% settings.entityLookback;
 		time -%= self.timeDifference.difference.load(.monotonic);
 		{
-			mutex.lock();
-			defer mutex.unlock();
+			mutex.lockUncancelable(main.io);
+			defer mutex.unlock(main.io);
 			self.interpolation.updateIndexed(time, self.lastTime, self.super.indices[0..self.super.size], 4);
 		}
 		self.lastTime = time;
 	}
 
 	fn clientSideInternalAdd(_: *ItemDropManager, i: u16, drop: ItemDrop) void {
-		mutex.lock();
-		defer mutex.unlock();
+		mutex.lockUncancelable(main.io);
+		defer mutex.unlock(main.io);
 		for (&instance.?.interpolation.lastVel) |*lastVel| {
 			@as(*align(8) [ItemDropManager.maxCapacity]Vec3d, @ptrCast(lastVel))[i] = Vec3d{0, 0, 0};
 		}
@@ -528,9 +528,9 @@ pub const ClientItemDropManager = struct { // MARK: ClientItemDropManager
 	}
 
 	pub fn remove(self: *ClientItemDropManager, i: u16) void {
-		self.super.emptyMutex.lock();
+		self.super.emptyMutex.lockUncancelable(main.io);
 		self.super.isEmpty.set(i);
-		self.super.emptyMutex.unlock();
+		self.super.emptyMutex.unlock(main.io);
 		self.super.changeQueue.pushBack(.{.remove = i});
 	}
 

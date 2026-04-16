@@ -9,13 +9,23 @@ const NeverFailingAllocator = main.heap.NeverFailingAllocator;
 pub const file_monitor = @import("utils/file_monitor.zig");
 pub const VirtualList = @import("utils/virtual_mem.zig").VirtualList;
 
+pub const FormatErrorReturnTrace = struct {
+	trace: *const std.builtin.StackTrace,
+	terminal_mode: std.Io.Terminal.Mode = .no_color,
+
+	pub fn format(self: FormatErrorReturnTrace, writer: *std.Io.Writer) std.Io.Writer.Error!void {
+		try writer.writeByte('\n');
+		try std.debug.writeErrorReturnTrace(self.trace, .{.writer = writer, .mode = self.terminal_mode});
+	}
+};
+
 pub const Compression = struct { // MARK: Compression
 	pub fn deflate(allocator: NeverFailingAllocator, data: []const u8, level: std.compress.flate.Compress.Options) []u8 {
 		var result = std.Io.Writer.Allocating.initCapacity(allocator.allocator, 16) catch unreachable;
 		var buffer: [65536]u8 = undefined;
 		var compress = std.compress.flate.Compress.init(&result.writer, &buffer, .raw, level) catch unreachable;
 		compress.writer.writeAll(data) catch unreachable;
-		compress.writer.flush() catch unreachable;
+		compress.finish() catch unreachable;
 		result.writer.flush() catch unreachable;
 		return result.toOwnedSlice() catch unreachable;
 	}
@@ -33,7 +43,7 @@ pub const Compression = struct { // MARK: Compression
 		var walker = sourceDir.walk(main.stackAllocator);
 		defer walker.deinit();
 
-		while (try walker.next()) |entry| {
+		while (try walker.next(main.io)) |entry| {
 			if (entry.kind == .file) {
 				var relPath: []const u8 = entry.path;
 				if (builtin.os.tag == .windows) { // I hate you
@@ -57,7 +67,7 @@ pub const Compression = struct { // MARK: Compression
 				_ = try comp.writer.writeAll(fileData);
 			}
 		}
-		try comp.writer.flush();
+		try comp.finish();
 		try writer.flush();
 	}
 
@@ -588,7 +598,7 @@ pub fn ConcurrentQueue(comptime T: type) type { // MARK: ConcurrentQueue
 	return struct {
 		const Self = @This();
 		super: CircularBufferQueue(T),
-		mutex: std.Thread.Mutex = .{},
+		mutex: std.Io.Mutex = .init,
 
 		pub fn init(allocator: NeverFailingAllocator, initialCapacity: usize) Self {
 			return .{
@@ -601,20 +611,20 @@ pub fn ConcurrentQueue(comptime T: type) type { // MARK: ConcurrentQueue
 		}
 
 		pub fn pushBack(self: *Self, elem: T) void {
-			self.mutex.lock();
-			defer self.mutex.unlock();
+			self.mutex.lockUncancelable(main.io);
+			defer self.mutex.unlock(main.io);
 			self.super.pushBack(elem);
 		}
 
 		pub fn popFront(self: *Self) ?T {
-			self.mutex.lock();
-			defer self.mutex.unlock();
+			self.mutex.lockUncancelable(main.io);
+			defer self.mutex.unlock(main.io);
 			return self.super.popFront();
 		}
 
 		pub fn isEmpty(self: *Self) bool {
-			self.mutex.lock();
-			defer self.mutex.unlock();
+			self.mutex.lockUncancelable(main.io);
+			defer self.mutex.unlock(main.io);
 			return self.super.isEmpty();
 		}
 	};
@@ -628,7 +638,7 @@ pub fn ConcurrentMaxHeap(comptime T: type) type { // MARK: ConcurrentMaxHeap
 		const initialSize = 16;
 		size: usize,
 		array: []T,
-		mutex: std.Thread.Mutex = .{},
+		mutex: std.Io.Mutex = .init,
 		allocator: NeverFailingAllocator,
 
 		pub fn init(allocator: NeverFailingAllocator) @This() {
@@ -677,8 +687,8 @@ pub fn ConcurrentMaxHeap(comptime T: type) type { // MARK: ConcurrentMaxHeap
 
 		/// Needs to be called after updating the priority of all elements.
 		pub fn updatePriority(self: *@This()) void {
-			self.mutex.lock();
-			defer self.mutex.unlock();
+			self.mutex.lockUncancelable(main.io);
+			defer self.mutex.unlock(main.io);
 			for (0..self.size) |i| {
 				self.siftUp(i);
 			}
@@ -693,8 +703,8 @@ pub fn ConcurrentMaxHeap(comptime T: type) type { // MARK: ConcurrentMaxHeap
 
 		/// Adds a new element to the heap.
 		pub fn add(self: *@This(), elem: T) void {
-			self.mutex.lock();
-			defer self.mutex.unlock();
+			self.mutex.lockUncancelable(main.io);
+			defer self.mutex.unlock(main.io);
 
 			if (self.size == self.array.len) {
 				self.increaseCapacity(self.size*2);
@@ -705,8 +715,8 @@ pub fn ConcurrentMaxHeap(comptime T: type) type { // MARK: ConcurrentMaxHeap
 		}
 
 		pub fn addMany(self: *@This(), elems: []const T) void {
-			self.mutex.lock();
-			defer self.mutex.unlock();
+			self.mutex.lockUncancelable(main.io);
+			defer self.mutex.unlock(main.io);
 
 			if (self.size + elems.len > self.array.len) {
 				self.increaseCapacity(self.size*2 + elems.len);
@@ -728,8 +738,8 @@ pub fn ConcurrentMaxHeap(comptime T: type) type { // MARK: ConcurrentMaxHeap
 		/// Returns the biggest element and removes it from the heap.
 		/// If empty blocks until a new object is added or the datastructure is closed.
 		pub fn extractMax(self: *@This()) ?T {
-			self.mutex.lock();
-			defer self.mutex.unlock();
+			self.mutex.lockUncancelable(main.io);
+			defer self.mutex.unlock(main.io);
 			if (self.size == 0) return null;
 			const ret = self.array[0];
 			self.removeIndex(0);
@@ -737,8 +747,8 @@ pub fn ConcurrentMaxHeap(comptime T: type) type { // MARK: ConcurrentMaxHeap
 		}
 
 		pub fn extractAny(self: *@This()) ?T {
-			self.mutex.lock();
-			defer self.mutex.unlock();
+			self.mutex.lockUncancelable(main.io);
+			defer self.mutex.unlock(main.io);
 			if (self.size == 0) return null;
 			self.size -= 1;
 			return self.array[self.size];
@@ -776,21 +786,21 @@ pub const ThreadPool = struct { // MARK: ThreadPool
 		taskType: TaskType = .misc,
 	};
 	pub const Performance = struct {
-		mutex: std.Thread.Mutex = .{},
+		mutex: std.Io.Mutex = .init,
 		tasks: [taskTypes]u32 = undefined,
 		utime: [taskTypes]i64 = undefined,
 
 		pub fn add(self: *Performance, task: TaskType, time: i64) void {
-			self.mutex.lock();
-			defer self.mutex.unlock();
+			self.mutex.lockUncancelable(main.io);
+			defer self.mutex.unlock(main.io);
 			const i = @intFromEnum(task);
 			self.tasks[i] += 1;
 			self.utime[i] += time;
 		}
 
 		pub fn clear(self: *Performance) void {
-			self.mutex.lock();
-			defer self.mutex.unlock();
+			self.mutex.lockUncancelable(main.io);
+			defer self.mutex.unlock(main.io);
 			for (0..taskTypes) |i| {
 				self.tasks[i] = 0;
 				self.utime[i] = 0;
@@ -798,8 +808,8 @@ pub const ThreadPool = struct { // MARK: ThreadPool
 		}
 
 		pub fn read(self: *Performance) Performance {
-			self.mutex.lock();
-			defer self.mutex.unlock();
+			self.mutex.lockUncancelable(main.io);
+			defer self.mutex.unlock(main.io);
 			return self.*;
 		}
 	};
@@ -809,7 +819,7 @@ pub const ThreadPool = struct { // MARK: ThreadPool
 	currentTasks: []Atomic(?*const VTable),
 	loadList: ConcurrentMaxHeap(Task),
 	playerJobQueue: ConcurrentQueue(*main.server.User),
-	semaphore: std.Thread.Semaphore = .{},
+	semaphore: std.Io.Semaphore = .{},
 	allocator: NeverFailingAllocator,
 	running: Atomic(bool) = .init(true),
 
@@ -834,7 +844,7 @@ pub const ThreadPool = struct { // MARK: ThreadPool
 				@panic("ThreadPool Creation Failed.");
 			};
 			var buf: [std.Thread.max_name_len]u8 = undefined;
-			thread.setName(std.fmt.bufPrint(&buf, "Worker {}", .{i + 1}) catch "Worker n") catch |err| std.log.err("Couldn't rename thread: {s}", .{@errorName(err)});
+			thread.setName(main.io, std.fmt.bufPrint(&buf, "Worker {}", .{i + 1}) catch "Worker n") catch |err| std.log.err("Couldn't rename thread: {s}", .{@errorName(err)});
 		}
 		return self;
 	}
@@ -865,15 +875,15 @@ pub const ThreadPool = struct { // MARK: ThreadPool
 
 	pub fn closeAllTasksOfType(self: *ThreadPool, vtable: *const VTable) void {
 		std.debug.assert(vtable.taskType != .chunkgen);
-		self.loadList.mutex.lock();
-		defer self.loadList.mutex.unlock();
+		self.loadList.mutex.lockUncancelable(main.io);
+		defer self.loadList.mutex.unlock(main.io);
 		var i: u32 = 0;
 		while (i < self.loadList.size) {
 			const task = &self.loadList.array[i];
 			if (task.vtable == vtable) {
 				task.vtable.clean(task.self);
 				self.loadList.removeIndex(i);
-				self.semaphore.timedWait(0) catch {};
+				semaphoreTimedWait(&self.semaphore, 0) catch {};
 			} else {
 				i += 1;
 			}
@@ -903,7 +913,7 @@ pub const ThreadPool = struct { // MARK: ThreadPool
 				},
 				.hasMoreTasks => {
 					self.playerJobQueue.pushBack(player);
-					self.semaphore.post();
+					self.semaphore.post(main.io);
 					_ = self.trueQueueSize.fetchAdd(1, .monotonic);
 				},
 			}
@@ -920,7 +930,7 @@ pub const ThreadPool = struct { // MARK: ThreadPool
 		outer: while (self.running.load(.monotonic)) {
 			main.heap.GarbageCollection.syncPoint();
 
-			self.semaphore.timedWait(10_000_000) catch continue :outer;
+			semaphoreTimedWait(&self.semaphore, 10_000_000) catch continue :outer;
 
 			{
 				const task = self.getNextTask() orelse continue :outer;
@@ -938,7 +948,7 @@ pub const ThreadPool = struct { // MARK: ThreadPool
 				var temporaryTaskList = main.List(Task).init(main.stackAllocator);
 				defer temporaryTaskList.deinit();
 				while (self.loadList.extractAny()) |task| {
-					self.semaphore.timedWait(0) catch {};
+					semaphoreTimedWait(&self.semaphore, 0) catch {};
 					if (!task.vtable.isStillNeeded(task.self)) {
 						task.vtable.clean(task.self);
 						_ = self.trueQueueSize.fetchSub(1, .monotonic);
@@ -950,7 +960,7 @@ pub const ThreadPool = struct { // MARK: ThreadPool
 				}
 				self.loadList.addMany(temporaryTaskList.items);
 				for (0..temporaryTaskList.items.len) |_| {
-					self.semaphore.post();
+					self.semaphore.post(main.io);
 				}
 				const end = main.timestamp();
 				lastUpdate = end;
@@ -965,21 +975,21 @@ pub const ThreadPool = struct { // MARK: ThreadPool
 			.vtable = vtable,
 			.self = task,
 		});
-		self.semaphore.post();
+		self.semaphore.post(main.io);
 		_ = self.trueQueueSize.fetchAdd(1, .monotonic);
 	}
 
 	pub fn addPlayer(self: *ThreadPool, player: *main.server.User) void {
 		player.increaseRefCount();
 		self.playerJobQueue.pushBack(player);
-		self.semaphore.post();
+		self.semaphore.post(main.io);
 		_ = self.trueQueueSize.fetchAdd(1, .monotonic);
 	}
 
 	pub fn clear(self: *ThreadPool) void {
 		// Clear the remaining tasks:
 		while (self.loadList.extractAny()) |task| {
-			self.semaphore.timedWait(0) catch {};
+			semaphoreTimedWait(&self.semaphore, 0) catch {};
 			task.vtable.clean(task.self);
 			_ = self.trueQueueSize.fetchSub(1, .monotonic);
 		}
@@ -987,7 +997,7 @@ pub const ThreadPool = struct { // MARK: ThreadPool
 			while (player.getTaskFromJobQueue()) |task| {
 				task[0].vtable.clean(task[0].self);
 			}
-			self.semaphore.timedWait(0) catch {};
+			semaphoreTimedWait(&self.semaphore, 0) catch {};
 			player.decreaseRefCount();
 			_ = self.trueQueueSize.fetchSub(1, .monotonic);
 		}
@@ -1342,7 +1352,7 @@ pub fn Cache(comptime T: type, comptime numberOfBuckets: u32, comptime bucketSiz
 	if (numberOfBuckets & hashMask != 0) @compileError("The number of buckets should be a power of 2!");
 
 	const Bucket = struct {
-		mutex: std.Thread.Mutex = .{},
+		mutex: std.Io.Mutex = .init,
 		items: [bucketSize]?*T = @splat(null),
 
 		fn find(self: *@This(), compare: anytype) ?*T {
@@ -1381,8 +1391,8 @@ pub fn Cache(comptime T: type, comptime numberOfBuckets: u32, comptime bucketSiz
 		}
 
 		fn clear(self: *@This()) void {
-			self.mutex.lock();
-			defer self.mutex.unlock();
+			self.mutex.lockUncancelable(main.io);
+			defer self.mutex.unlock(main.io);
 			for (&self.items) |*nullItem| {
 				if (nullItem.*) |item| {
 					deinitFunction(item);
@@ -1392,8 +1402,8 @@ pub fn Cache(comptime T: type, comptime numberOfBuckets: u32, comptime bucketSiz
 		}
 
 		fn foreach(self: @This(), comptime function: fn (*T) void) void {
-			self.mutex.lock();
-			defer self.mutex.unlock();
+			self.mutex.lockUncancelable(main.io);
+			defer self.mutex.unlock(main.io);
 			for (self.items) |*nullItem| {
 				if (nullItem) |item| {
 					function(item);
@@ -1411,8 +1421,8 @@ pub fn Cache(comptime T: type, comptime numberOfBuckets: u32, comptime bucketSiz
 		pub fn find(self: *@This(), compareAndHash: anytype, comptime postGetFunction: ?fn (*T) void) ?*T {
 			const index: u32 = compareAndHash.hashCode() & hashMask;
 			_ = @atomicRmw(usize, &self.cacheRequests.raw, .Add, 1, .monotonic);
-			self.buckets[index].mutex.lock();
-			defer self.buckets[index].mutex.unlock();
+			self.buckets[index].mutex.lockUncancelable(main.io);
+			defer self.buckets[index].mutex.unlock(main.io);
 			if (self.buckets[index].find(compareAndHash)) |item| {
 				if (postGetFunction) |fun| fun(item);
 				return item;
@@ -1437,15 +1447,15 @@ pub fn Cache(comptime T: type, comptime numberOfBuckets: u32, comptime bucketSiz
 		/// Returns the object that got kicked out of the cache. This must be deinited by the user.
 		pub fn addToCache(self: *@This(), item: *T, hash: u32) ?*T {
 			const index = hash & hashMask;
-			self.buckets[index].mutex.lock();
-			defer self.buckets[index].mutex.unlock();
+			self.buckets[index].mutex.lockUncancelable(main.io);
+			defer self.buckets[index].mutex.unlock(main.io);
 			return self.buckets[index].add(item);
 		}
 
 		pub fn findOrCreate(self: *@This(), compareAndHash: anytype, comptime initFunction: fn (@TypeOf(compareAndHash)) *T, comptime postGetFunction: ?fn (*T) void) *T {
 			const index: u32 = compareAndHash.hashCode() & hashMask;
-			self.buckets[index].mutex.lock();
-			defer self.buckets[index].mutex.unlock();
+			self.buckets[index].mutex.lockUncancelable(main.io);
+			defer self.buckets[index].mutex.unlock(main.io);
 			const result = self.buckets[index].findOrCreate(compareAndHash, initFunction);
 			if (postGetFunction) |fun| fun(result);
 			return result;
@@ -1622,48 +1632,48 @@ pub const TimeDifference = struct { // MARK: TimeDifference
 	}
 };
 
-pub fn assertLocked(mutex: *const std.Thread.Mutex) void { // MARK: assertLocked()
+pub fn assertLocked(mutex: *const std.Io.Mutex) void { // MARK: assertLocked()
 	if (builtin.mode == .Debug) {
 		std.debug.assert(!@constCast(mutex).tryLock());
 	}
 }
 
-pub fn assertLockedShared(lock: *const std.Thread.RwLock) void {
+pub fn assertLockedShared(lock: *const std.Io.RwLock) void {
 	if (builtin.mode == .Debug) {
-		std.debug.assert(!@constCast(lock).tryLock());
+		std.debug.assert(!@constCast(lock).tryLock(main.io));
 	}
 }
 
 /// A read-write lock with read priority.
 pub const ReadWriteLock = struct { // MARK: ReadWriteLock
-	condition: std.Thread.Condition = .{},
-	mutex: std.Thread.Mutex = .{},
+	condition: std.Io.Condition = .init,
+	mutex: std.Io.Mutex = .init,
 	readers: u32 = 0,
 
 	pub fn lockRead(self: *ReadWriteLock) void {
-		self.mutex.lock();
+		self.mutex.lockUncancelable(main.io);
 		self.readers += 1;
-		self.mutex.unlock();
+		self.mutex.unlock(main.io);
 	}
 
 	pub fn unlockRead(self: *ReadWriteLock) void {
-		self.mutex.lock();
+		self.mutex.lockUncancelable(main.io);
 		self.readers -= 1;
 		if (self.readers == 0) {
-			self.condition.broadcast();
+			self.condition.broadcast(main.io);
 		}
-		self.mutex.unlock();
+		self.mutex.unlock(main.io);
 	}
 
 	pub fn lockWrite(self: *ReadWriteLock) void {
-		self.mutex.lock();
+		self.mutex.lockUncancelable(main.io);
 		while (self.readers != 0) {
-			self.condition.wait(&self.mutex);
+			self.condition.waitUncancelable(main.io, &self.mutex);
 		}
 	}
 
 	pub fn unlockWrite(self: *ReadWriteLock) void {
-		self.mutex.unlock();
+		self.mutex.unlock(main.io);
 	}
 
 	pub fn assertLockedWrite(self: *ReadWriteLock) void {
@@ -1746,7 +1756,7 @@ pub const BinaryReader = struct {
 
 	pub fn readEnum(self: *BinaryReader, T: type) error{ OutOfBounds, IntOutOfBounds, InvalidEnumTag }!T {
 		const int = try self.readInt(@typeInfo(T).@"enum".tag_type);
-		return std.meta.intToEnum(T, int);
+		return std.enums.fromInt(T, int) orelse return error.InvalidEnumTag;
 	}
 
 	pub fn readBool(self: *BinaryReader) error{ OutOfBounds, IntOutOfBounds, InvalidEnumTag }!bool {
@@ -2288,4 +2298,42 @@ pub fn fromBase64(allocator: NeverFailingAllocator, base64EncodedData: []const u
 	errdefer allocator.free(bytes);
 	try std.base64.url_safe.Decoder.decode(bytes, base64EncodedData);
 	return bytes;
+}
+
+pub fn semaphoreTimedWait(s: *std.Io.Semaphore, timeout_ns: u64) error{Timeout}!void {
+	const ResultSet = union(enum) {
+		semaphore_wait: std.Io.Cancelable!void,
+		timeout: std.Io.Cancelable!void,
+	};
+
+	const duration: std.Io.Duration = .fromNanoseconds(timeout_ns);
+	var buffer: [2]ResultSet = undefined;
+	var select = std.Io.Select(ResultSet).init(main.io, &buffer);
+	select.concurrent(.semaphore_wait, std.Io.Semaphore.wait, .{ s, main.io }) catch unreachable;
+	select.concurrent(.timeout, std.Io.sleep, .{ main.io, duration, .awake }) catch unreachable;
+	const result = select.await() catch unreachable;
+	_ = select.cancel();
+	switch (result) {
+		.semaphore_wait => return,
+		.timeout => return error.Timeout,
+	}
+}
+
+pub fn conditionTimedWait(cond: *std.Io.Condition, mutex: *std.Io.Mutex, timeout_ns: u64) error{Timeout}!void {
+	const ResultSet = union(enum) {
+		condition_wait: std.Io.Cancelable!void,
+		timeout: std.Io.Cancelable!void,
+	};
+
+	const duration: std.Io.Duration = .fromNanoseconds(timeout_ns);
+	var buffer: [2]ResultSet = undefined;
+	var select = std.Io.Select(ResultSet).init(main.io, &buffer);
+	select.concurrent(.condition_wait, std.Io.Condition.wait, .{ cond, main.io, mutex }) catch unreachable;
+	select.concurrent(.timeout, std.Io.sleep, .{ main.io, duration, .awake }) catch unreachable;
+	const result = select.await() catch unreachable;
+	_ = select.cancel();
+	switch (result) {
+		.condition_wait => return,
+		.timeout => return error.Timeout,
+	}
 }

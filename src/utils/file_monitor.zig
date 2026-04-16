@@ -59,7 +59,7 @@ const LinuxImpl = struct { // MARK: LinuxImpl
 	var fd: c_int = undefined;
 	var watchDescriptors: std.StringHashMap(*DirectoryInfo) = undefined;
 	var callbacks: std.AutoHashMap(c_int, *DirectoryInfo) = undefined;
-	var mutex: std.Thread.Mutex = .{};
+	var mutex: std.Io.Mutex = .init;
 
 	fn init() void {
 		fd = c.inotify_init();
@@ -93,7 +93,7 @@ const LinuxImpl = struct { // MARK: LinuxImpl
 		};
 		defer iterableDir.close();
 		var iterator = iterableDir.iterate();
-		while (iterator.next() catch |err| {
+		while (iterator.next(main.io) catch |err| {
 			std.log.err("Error while iterating dir {s}: {s}", .{path, @errorName(err)});
 			return;
 		}) |entry| {
@@ -116,8 +116,8 @@ const LinuxImpl = struct { // MARK: LinuxImpl
 	}
 
 	fn handleEvents() void {
-		mutex.lock();
-		defer mutex.unlock();
+		mutex.lockUncancelable(main.io);
+		defer mutex.unlock(main.io);
 		var available: c_uint = 0;
 		const result = c.ioctl(fd, c.FIONREAD, &available);
 		if (result == -1) {
@@ -148,9 +148,9 @@ const LinuxImpl = struct { // MARK: LinuxImpl
 				callback.*.needsUpdate = false;
 				updateRecursiveCallback(callback.*);
 			}
-			mutex.unlock();
+			mutex.unlock(main.io);
 			callback.*.callback(callback.*.userData);
-			mutex.lock();
+			mutex.lockUncancelable(main.io);
 		}
 	}
 
@@ -175,8 +175,8 @@ const LinuxImpl = struct { // MARK: LinuxImpl
 	}
 
 	fn listenToPath(path: [:0]const u8, callback: CallbackFunction, userData: usize) void {
-		mutex.lock();
-		defer mutex.unlock();
+		mutex.lockUncancelable(main.io);
+		defer mutex.unlock(main.io);
 		if (watchDescriptors.contains(path)) {
 			std.log.err("Tried to add duplicate watch descriptor for path {s}", .{path});
 			return;
@@ -195,8 +195,8 @@ const LinuxImpl = struct { // MARK: LinuxImpl
 	}
 
 	fn removePath(path: [:0]const u8) void {
-		mutex.lock();
-		defer mutex.unlock();
+		mutex.lockUncancelable(main.io);
+		defer mutex.unlock(main.io);
 		if (watchDescriptors.fetchRemove(path)) |kv| {
 			for (kv.value.watchDescriptors.items) |watchDescriptor| {
 				removeWatchDescriptor(watchDescriptor, path);
@@ -218,7 +218,7 @@ const WindowsImpl = struct { // MARK: WindowsImpl
 	var notificationHandlers: std.StringHashMap(*DirectoryInfo) = undefined;
 	var callbacks: main.List(*DirectoryInfo) = undefined;
 	var justTheHandles: main.List(HANDLE) = undefined;
-	var mutex: std.Thread.Mutex = .{};
+	var mutex: std.Io.Mutex = .init;
 
 	const DirectoryInfo = struct {
 		callback: CallbackFunction,
@@ -246,8 +246,8 @@ const WindowsImpl = struct { // MARK: WindowsImpl
 	}
 
 	fn handleEvents() void {
-		mutex.lock();
-		defer mutex.unlock();
+		mutex.lockUncancelable(main.io);
+		defer mutex.unlock(main.io);
 		while (true) {
 			if (justTheHandles.items.len == 0) break;
 			const waitResult = std.os.windows.kernel32.WaitForMultipleObjects(@intCast(justTheHandles.items.len), justTheHandles.items.ptr, @intFromBool(false), 0);
@@ -265,15 +265,15 @@ const WindowsImpl = struct { // MARK: WindowsImpl
 			if (result == 0) {
 				std.log.err("Error on FindNextChangeNotification for path {s}: {}", .{callbackInfo.path, result});
 			}
-			mutex.unlock();
+			mutex.unlock(main.io);
 			callbackInfo.callback(callbackInfo.userData);
-			mutex.lock();
+			mutex.lockUncancelable(main.io);
 		}
 	}
 
 	fn listenToPath(path: [:0]const u8, callback: CallbackFunction, userData: usize) void {
-		mutex.lock();
-		defer mutex.unlock();
+		mutex.lockUncancelable(main.io);
+		defer mutex.unlock(main.io);
 		if (notificationHandlers.contains(path)) {
 			std.log.err("Tried to add duplicate notification handler for path {s}", .{path});
 			return;
@@ -297,8 +297,8 @@ const WindowsImpl = struct { // MARK: WindowsImpl
 	}
 
 	fn removePath(path: [:0]const u8) void {
-		mutex.lock();
-		defer mutex.unlock();
+		mutex.lockUncancelable(main.io);
+		defer mutex.unlock(main.io);
 		if (notificationHandlers.fetchRemove(path)) |kv| {
 			const index = std.mem.indexOfScalar(*DirectoryInfo, callbacks.items, kv.value).?;
 			_ = callbacks.swapRemove(index);

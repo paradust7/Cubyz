@@ -380,7 +380,7 @@ pub const Chunk = struct { // MARK: Chunk
 	voxelSizeMask: i32,
 
 	blockPosToEntityDataMap: std.AutoHashMapUnmanaged(BlockPos, main.block_entity.BlockEntity),
-	blockPosToEntityDataMapMutex: std.Thread.Mutex,
+	blockPosToEntityDataMapMutex: std.Io.Mutex,
 
 	pub fn init(pos: ChunkPosition) *Chunk {
 		const self = memoryPool.create();
@@ -393,7 +393,7 @@ pub const Chunk = struct { // MARK: Chunk
 			.voxelSizeShift = voxelSizeShift,
 			.voxelSizeMask = pos.voxelSize - 1,
 			.blockPosToEntityDataMap = .{},
-			.blockPosToEntityDataMapMutex = .{},
+			.blockPosToEntityDataMapMutex = .init,
 		};
 		self.data.init();
 		return self;
@@ -411,8 +411,8 @@ pub const Chunk = struct { // MARK: Chunk
 	}
 
 	pub fn unloadBlockEntities(self: *Chunk, comptime side: main.sync.Side) void {
-		self.blockPosToEntityDataMapMutex.lock();
-		defer self.blockPosToEntityDataMapMutex.unlock();
+		self.blockPosToEntityDataMapMutex.lockUncancelable(main.io);
+		defer self.blockPosToEntityDataMapMutex.unlock(main.io);
 		var iterator = self.blockPosToEntityDataMap.iterator();
 		while (iterator.next()) |elem| {
 			const pos = elem.key_ptr.*;
@@ -476,7 +476,7 @@ pub const ServerChunk = struct { // MARK: ServerChunk
 	wasStored: bool = false,
 	shouldStoreNeighbors: bool = false,
 
-	mutex: std.Thread.Mutex = .{},
+	mutex: std.Io.Mutex = .init,
 	refCount: std.atomic.Value(u16),
 
 	pub fn initAndIncreaseRefCount(pos: ChunkPosition) *ServerChunk {
@@ -491,7 +491,7 @@ pub const ServerChunk = struct { // MARK: ServerChunk
 				.voxelSizeShift = voxelSizeShift,
 				.voxelSizeMask = pos.voxelSize - 1,
 				.blockPosToEntityDataMap = .{},
-				.blockPosToEntityDataMapMutex = .{},
+				.blockPosToEntityDataMapMutex = .init,
 			},
 			.refCount = .init(1),
 		};
@@ -600,8 +600,8 @@ pub const ServerChunk = struct { // MARK: ServerChunk
 		const xOffset = if (other.super.pos.wx != self.super.pos.wx) chunkSize/2 else 0; // Offsets of the lower resolution chunk in this chunk.
 		const yOffset = if (other.super.pos.wy != self.super.pos.wy) chunkSize/2 else 0;
 		const zOffset = if (other.super.pos.wz != self.super.pos.wz) chunkSize/2 else 0;
-		self.mutex.lock();
-		defer self.mutex.unlock();
+		self.mutex.lockUncancelable(main.io);
+		defer self.mutex.unlock(main.io);
 		main.utils.assertLocked(&other.mutex);
 
 		// Count the neighbors for each subblock. An transparent block counts 5. A chunk border(unknown block) only counts 1.
@@ -687,12 +687,12 @@ pub const ServerChunk = struct { // MARK: ServerChunk
 	}
 
 	pub fn save(self: *ServerChunk, world: *main.server.ServerWorld) void {
-		self.mutex.lock();
-		defer self.mutex.unlock();
+		self.mutex.lockUncancelable(main.io);
+		defer self.mutex.unlock(main.io);
 		if (self.shouldStoreNeighbors and self.super.pos.voxelSize == 1) {
 			// Store all the neighbor chunks as well:
-			self.mutex.unlock();
-			defer self.mutex.lock();
+			self.mutex.unlock(main.io);
+			defer self.mutex.lockUncancelable(main.io);
 			var dx: i32 = -@as(i32, chunkSize);
 			while (dx <= chunkSize) : (dx += chunkSize) {
 				var dy: i32 = -@as(i32, chunkSize);
@@ -707,8 +707,8 @@ pub const ServerChunk = struct { // MARK: ServerChunk
 							.voxelSize = 1,
 						});
 						defer ch.decreaseRefCount();
-						ch.mutex.lock();
-						defer ch.mutex.unlock();
+						ch.mutex.lockUncancelable(main.io);
+						defer ch.mutex.unlock(main.io);
 						if (!ch.wasStored) {
 							ch.setChanged();
 						}
@@ -718,8 +718,8 @@ pub const ServerChunk = struct { // MARK: ServerChunk
 		}
 		if (!self.wasStored and self.super.pos.voxelSize == 1) {
 			// Store the surrounding map pieces as well:
-			self.mutex.unlock();
-			defer self.mutex.lock();
+			self.mutex.unlock(main.io);
+			defer self.mutex.lockUncancelable(main.io);
 			const mapStartX = self.super.pos.wx -% main.server.terrain.SurfaceMap.MapFragment.mapSize/2 & ~@as(i32, main.server.terrain.SurfaceMap.MapFragment.mapMask);
 			const mapStartY = self.super.pos.wy -% main.server.terrain.SurfaceMap.MapFragment.mapSize/2 & ~@as(i32, main.server.terrain.SurfaceMap.MapFragment.mapMask);
 			for (0..2) |dx| {

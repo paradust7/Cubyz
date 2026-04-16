@@ -19,7 +19,7 @@ const border: f32 = 3;
 pos: Vec2f = undefined,
 size: Vec2f = undefined,
 child: GuiComponent = undefined,
-mutex: std.Thread.Mutex = .{},
+mutex: std.Io.Mutex = .init,
 
 pub fn updateInner(self: *MutexComponent, _other: anytype) void {
 	main.utils.assertLocked(&self.mutex);
@@ -44,33 +44,33 @@ pub fn toComponent(self: *MutexComponent) GuiComponent {
 }
 
 pub fn updateSelected(self: *MutexComponent) void {
-	self.mutex.lock();
-	defer self.mutex.unlock();
+	self.mutex.lockUncancelable(main.io);
+	defer self.mutex.unlock(main.io);
 	self.child.updateSelected();
 }
 
 pub fn updateHovered(self: *MutexComponent, mousePosition: Vec2f) main.callbacks.Result {
-	self.mutex.lock();
-	defer self.mutex.unlock();
+	self.mutex.lockUncancelable(main.io);
+	defer self.mutex.unlock(main.io);
 	return self.child.updateHovered(mousePosition);
 }
 
 pub fn render(self: *MutexComponent, mousePosition: Vec2f) void {
-	self.mutex.lock();
-	defer self.mutex.unlock();
+	self.mutex.lockUncancelable(main.io);
+	defer self.mutex.unlock(main.io);
 	self.child.render(mousePosition);
 	self.pos = self.child.pos();
 	self.size = self.child.size();
 }
 
 pub fn mainButtonPressed(self: *MutexComponent, mousePosition: Vec2f) main.callbacks.Result {
-	self.mutex.lock();
-	defer self.mutex.unlock();
+	self.mutex.lockUncancelable(main.io);
+	defer self.mutex.unlock(main.io);
 	return self.child.mainButtonPressed(mousePosition);
 }
 
 pub fn mainButtonReleased(self: *MutexComponent, mousePosition: Vec2f) void {
-	self.mutex.lock();
-	defer self.mutex.unlock();
+	self.mutex.lockUncancelable(main.io);
+	defer self.mutex.unlock(main.io);
 	self.child.mainButtonReleased(mousePosition);
 }

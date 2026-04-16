@@ -417,8 +417,9 @@ pub const Mask = struct {
 			blockProperty: Property,
 
 			const Property = blk: {
-				var tempFields: [@typeInfo(Block).@"struct".decls.len]std.builtin.Type.EnumField = undefined;
-				var count = 0;
+				var tempNames: [@typeInfo(Block).@"struct".decls.len][]const u8 = undefined;
+				var tempValues: [@typeInfo(Block).@"struct".decls.len]u8 = undefined;
+				var count: u8 = 0;
 
 				for (std.meta.declarations(Block)) |decl| {
 					const declInfo = @typeInfo(@TypeOf(@field(Block, decl.name)));
@@ -426,18 +427,15 @@ pub const Mask = struct {
 					if (declInfo.@"fn".return_type != bool) continue;
 					if (declInfo.@"fn".params.len != 1) continue;
 
-					tempFields[count] = .{.name = decl.name, .value = count};
+					tempNames[count] = decl.name;
+					tempValues[count] = count;
 					count += 1;
 				}
 
-				const outFields: [count]std.builtin.Type.EnumField = tempFields[0..count].*;
+				const names: [count][]const u8 = tempNames[0..count].*;
+				const values: [count]u8 = tempValues[0..count].*;
 
-				break :blk @Type(.{.@"enum" = .{
-					.tag_type = u8,
-					.fields = &outFields,
-					.decls = &.{},
-					.is_exhaustive = true,
-				}});
+				break :blk @Enum(u8, .exhaustive, &names, &values);
 			};
 
 			fn initFromString(specifier: []const u8) !Inner {

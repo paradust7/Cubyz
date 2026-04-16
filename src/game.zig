@@ -424,7 +424,7 @@ pub const Player = struct { // MARK: Player
 	pub var isFlying: Atomic(bool) = .init(false);
 	pub var isGhost: Atomic(bool) = .init(false);
 	pub var hyperSpeed: Atomic(bool) = .init(false);
-	pub var mutex: std.Thread.Mutex = .{};
+	pub var mutex: std.Io.Mutex = .init;
 	pub const inventorySize = 32;
 	pub var inventory: ClientInventory = undefined;
 	pub var selectedSlot: u32 = 0;
@@ -459,44 +459,44 @@ pub const Player = struct { // MARK: Player
 	}
 
 	pub fn setPosBlocking(newPos: Vec3d) void {
-		mutex.lock();
-		defer mutex.unlock();
+		mutex.lockUncancelable(main.io);
+		defer mutex.unlock(main.io);
 		super.pos = newPos;
 	}
 
 	pub fn getPosBlocking() Vec3d {
-		mutex.lock();
-		defer mutex.unlock();
+		mutex.lockUncancelable(main.io);
+		defer mutex.unlock(main.io);
 		return super.pos;
 	}
 
 	pub fn getVelBlocking() Vec3d {
-		mutex.lock();
-		defer mutex.unlock();
+		mutex.lockUncancelable(main.io);
+		defer mutex.unlock(main.io);
 		return super.vel;
 	}
 
 	pub fn getEyePosBlocking() Vec3d {
-		mutex.lock();
-		defer mutex.unlock();
+		mutex.lockUncancelable(main.io);
+		defer mutex.unlock(main.io);
 		return eye.pos + super.pos + eye.desiredPos;
 	}
 
 	pub fn getEyeVelBlocking() Vec3d {
-		mutex.lock();
-		defer mutex.unlock();
+		mutex.lockUncancelable(main.io);
+		defer mutex.unlock(main.io);
 		return eye.vel;
 	}
 
 	pub fn getEyeCoyoteBlocking() f64 {
-		mutex.lock();
-		defer mutex.unlock();
+		mutex.lockUncancelable(main.io);
+		defer mutex.unlock(main.io);
 		return eye.coyote;
 	}
 
 	pub fn getJumpCoyoteBlocking() f64 {
-		mutex.lock();
-		defer mutex.unlock();
+		mutex.lockUncancelable(main.io);
+		defer mutex.unlock(main.io);
 		return jumpCoyote;
 	}
 

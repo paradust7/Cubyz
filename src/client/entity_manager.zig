@@ -30,7 +30,7 @@ var uniforms: struct {
 
 var pipeline: graphics.Pipeline = undefined; // Entities are sometimes small and sometimes big. Therefor it would mean a lot of work to still use smooth lighting. Therefor the non-smooth shader is used for those.
 pub var entities: main.utils.VirtualList(main.client.Entity, 1 << 20) = undefined;
-pub var mutex: std.Thread.Mutex = .{};
+pub var mutex: std.Io.Mutex = .init;
 var model: *main.entityModel.EntityModel = undefined;
 pub fn init() void {
 	entities = .init();
@@ -79,8 +79,8 @@ pub fn initAfterWorld() void {
 	}).get();
 }
 pub fn renderNames(projMatrix: Mat4f, playerPos: Vec3d) void {
-	mutex.lock();
-	defer mutex.unlock();
+	mutex.lockUncancelable(main.io);
+	defer mutex.unlock(main.io);
 
 	const screenUnits = @as(f32, @floatFromInt(main.Window.height))/1024;
 	const fontBaseSize = 128.0;
@@ -120,8 +120,8 @@ pub fn renderNames(projMatrix: Mat4f, playerPos: Vec3d) void {
 }
 
 pub fn render(projMatrix: Mat4f, ambientLight: Vec3f, playerPos: Vec3d) void {
-	mutex.lock();
-	defer mutex.unlock();
+	mutex.lockUncancelable(main.io);
+	defer mutex.unlock(main.io);
 	update();
 	pipeline.bind(null);
 
@@ -159,15 +159,15 @@ pub fn render(projMatrix: Mat4f, ambientLight: Vec3f, playerPos: Vec3d) void {
 }
 
 pub fn addEntity(zon: ZonElement) !void {
-	mutex.lock();
-	defer mutex.unlock();
+	mutex.lockUncancelable(main.io);
+	defer mutex.unlock(main.io);
 	var ent = entities.addOne();
 	try ent.init(zon, main.globalAllocator);
 }
 
 pub fn removeEntity(id: u32) void {
-	mutex.lock();
-	defer mutex.unlock();
+	mutex.lockUncancelable(main.io);
+	defer mutex.unlock(main.io);
 	for (entities.items(), 0..) |*ent, i| {
 		if (ent.id == id) {
 			ent.deinit(main.globalAllocator);
@@ -182,8 +182,8 @@ pub fn removeEntity(id: u32) void {
 }
 
 pub fn serverUpdate(time: i16, entityData: []main.entity.EntityNetworkData) void {
-	mutex.lock();
-	defer mutex.unlock();
+	mutex.lockUncancelable(main.io);
+	defer mutex.unlock(main.io);
 	timeDifference.addDataPoint(time);
 
 	for (entityData) |data| {

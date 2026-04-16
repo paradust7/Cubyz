@@ -148,8 +148,8 @@ pub fn update(deltaTime: f64, inputAcc: Vec3d, jumping: bool) void { // MARK: up
 	}
 
 	if (!Player.isGhost.load(.monotonic)) {
-		Player.mutex.lock();
-		defer Player.mutex.unlock();
+		Player.mutex.lockUncancelable(main.io);
+		defer Player.mutex.unlock(main.io);
 
 		const hitBox = Player.outerBoundingBox;
 		var steppingHeight = Player.steppingHeight()[2];

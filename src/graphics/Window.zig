@@ -259,13 +259,12 @@ pub const Gamepad = struct {
 	}
 	pub fn updateControllerMappings() void {
 		std.log.info("Updating controller mappings in-memory...", .{});
-		var _envMap = std.process.getEnvMap(main.stackAllocator.allocator) catch null;
-		if (_envMap) |*envMap| {
-			defer envMap.deinit();
-			if (envMap.get("SDL_GAMECONTROLLERCONFIG")) |controller_config_env| {
-				_ = c.glfwUpdateGamepadMappings(@ptrCast(controller_config_env));
-				return;
-			}
+		if (main.env.getAlloc(main.stackAllocator.allocator, "SDL_GAMECONTROLLERCONFIG") catch null) |controller_config_env| {
+			defer main.stackAllocator.free(controller_config_env);
+			const nullTerminated = main.stackAllocator.dupeZ(u8, controller_config_env);
+			defer main.stackAllocator.free(nullTerminated);
+			_ = c.glfwUpdateGamepadMappings(nullTerminated.ptr);
+			return;
 		}
 		const data = main.files.cwd().read(main.stackAllocator, "./gamecontrollerdb.txt") catch |err| {
 			if (@TypeOf(err) == std.fs.File.OpenError and err == std.fs.File.OpenError.FileNotFound) {
