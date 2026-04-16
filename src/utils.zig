@@ -9,6 +9,16 @@ const NeverFailingAllocator = main.heap.NeverFailingAllocator;
 pub const file_monitor = @import("utils/file_monitor.zig");
 pub const VirtualList = @import("utils/virtual_mem.zig").VirtualList;
 
+pub const FormatErrorReturnTrace = struct {
+	trace: *const std.builtin.StackTrace,
+	terminal_mode: std.Io.Terminal.Mode = .no_color,
+
+	pub fn format(self: FormatErrorReturnTrace, writer: *std.Io.Writer) std.Io.Writer.Error!void {
+		try writer.writeByte('\n');
+		try std.debug.writeErrorReturnTrace(self.trace, .{.writer = writer, .mode = self.terminal_mode});
+	}
+};
+
 pub const Compression = struct { // MARK: Compression
 	pub fn deflate(allocator: NeverFailingAllocator, data: []const u8, level: std.compress.flate.Compress.Options) []u8 {
 		var result = std.Io.Writer.Allocating.initCapacity(allocator.allocator, 16) catch unreachable;

@@ -1605,7 +1605,7 @@ pub const Connection = struct { // MARK: Connection
 		self.tryReceive(data) catch |err| {
 			std.log.err("Got error while processing received network data: {s}", .{@errorName(err)});
 			if (@errorReturnTrace()) |trace| {
-				std.log.info("{f}", .{std.debug.FormatStackTrace{.stack_trace = trace.*, .terminal_mode = .no_color}});
+				std.log.info("{f}", .{utils.FormatErrorReturnTrace{.trace = trace}});
 			}
 			std.log.debug("Packet data: {any}", .{data});
 			self.disconnect();
